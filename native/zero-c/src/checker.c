@@ -14,6 +14,7 @@ typedef struct {
   char **roots;
   Scope **root_scopes;
   char **paths;
+  char **origin_paths;
   bool *mutable_borrow;
   bool *local_storage;
   size_t len;
@@ -118,10 +119,11 @@ static char *origin_path_join(const char *prefix, const char *suffix) {
   return joined;
 }
 
-static bool borrow_origins_add_path(BorrowOrigins *origins, const char *root, Scope *root_scope, bool mut_borrow, bool local_storage, const char *path) {
+static bool borrow_origins_add_full(BorrowOrigins *origins, const char *root, Scope *root_scope, bool mut_borrow, bool local_storage, const char *path, const char *origin_path) {
   if (!origins || !root || !root[0]) return false;
   for (size_t i = 0; i < origins->len; i++) {
-    if (strcmp(origins->roots[i], root) == 0 && origins->root_scopes[i] == root_scope && origin_path_equal(origins->paths[i], path)) {
+    if (strcmp(origins->roots[i], root) == 0 && origins->root_scopes[i] == root_scope &&
+        origin_path_equal(origins->paths[i], path) && origin_path_equal(origins->origin_paths[i], origin_path)) {
       origins->mutable_borrow[i] = origins->mutable_borrow[i] || mut_borrow;
       origins->local_storage[i] = origins->local_storage[i] || local_storage;
       return true;
@@ -132,36 +134,33 @@ static bool borrow_origins_add_path(BorrowOrigins *origins, const char *root, Sc
     origins->roots = realloc(origins->roots, origins->cap * sizeof(char *));
     origins->root_scopes = realloc(origins->root_scopes, origins->cap * sizeof(Scope *));
     origins->paths = realloc(origins->paths, origins->cap * sizeof(char *));
+    origins->origin_paths = realloc(origins->origin_paths, origins->cap * sizeof(char *));
     origins->mutable_borrow = realloc(origins->mutable_borrow, origins->cap * sizeof(bool));
     origins->local_storage = realloc(origins->local_storage, origins->cap * sizeof(bool));
   }
   origins->roots[origins->len] = z_strdup(root);
   origins->root_scopes[origins->len] = root_scope;
   origins->paths[origins->len] = path && path[0] ? z_strdup(path) : NULL;
+  origins->origin_paths[origins->len] = origin_path && origin_path[0] ? z_strdup(origin_path) : NULL;
   origins->mutable_borrow[origins->len] = mut_borrow;
   origins->local_storage[origins->len] = local_storage;
   origins->len++;
   return true;
 }
 
-static bool borrow_origins_add(BorrowOrigins *origins, const char *root, Scope *root_scope, bool mut_borrow, bool local_storage) {
-  return borrow_origins_add_path(origins, root, root_scope, mut_borrow, local_storage, NULL);
+static bool borrow_origins_add_path(BorrowOrigins *origins, const char *root, Scope *root_scope, bool mut_borrow, bool local_storage, const char *path) {
+  return borrow_origins_add_full(origins, root, root_scope, mut_borrow, local_storage, path, NULL);
 }
 
-static bool borrow_origins_add_all_as(BorrowOrigins *out, const BorrowOrigins *source, bool mut_borrow) {
-  bool added = false;
-  if (!out || !source) return false;
-  for (size_t i = 0; i < source->len; i++) {
-    if (borrow_origins_add_path(out, source->roots[i], source->root_scopes[i], mut_borrow, source->local_storage[i], source->paths[i])) added = true;
-  }
-  return added;
+static bool borrow_origins_add(BorrowOrigins *origins, const char *root, Scope *root_scope, bool mut_borrow, bool local_storage) {
+  return borrow_origins_add_path(origins, root, root_scope, mut_borrow, local_storage, NULL);
 }
 
 static bool borrow_origins_add_all(BorrowOrigins *out, const BorrowOrigins *source) {
   bool added = false;
   if (!out || !source) return false;
   for (size_t i = 0; i < source->len; i++) {
-    if (borrow_origins_add_path(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], source->paths[i])) added = true;
+    if (borrow_origins_add_full(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], source->paths[i], source->origin_paths[i])) added = true;
   }
   return added;
 }
@@ -171,7 +170,18 @@ static bool borrow_origins_add_all_with_prefix(BorrowOrigins *out, const BorrowO
   if (!out || !source) return false;
   for (size_t i = 0; i < source->len; i++) {
     char *path = origin_path_join(path_prefix, source->paths[i]);
-    if (borrow_origins_add_path(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], path)) added = true;
+    if (borrow_origins_add_full(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], path, source->origin_paths[i])) added = true;
+    free(path);
+  }
+  return added;
+}
+
+static bool borrow_origins_add_all_as_with_prefix(BorrowOrigins *out, const BorrowOrigins *source, bool mut_borrow, const char *path_prefix) {
+  bool added = false;
+  if (!out || !source) return false;
+  for (size_t i = 0; i < source->len; i++) {
+    char *path = origin_path_join(path_prefix, source->paths[i]);
+    if (borrow_origins_add_full(out, source->roots[i], source->root_scopes[i], mut_borrow, source->local_storage[i], path, source->origin_paths[i])) added = true;
     free(path);
   }
   return added;
@@ -183,7 +193,7 @@ static bool borrow_origins_add_all_under_path(BorrowOrigins *out, const BorrowOr
   for (size_t i = 0; i < source->len; i++) {
     if (!origin_path_is_within(source->paths[i], path_prefix)) continue;
     const char *relative_path = origin_path_after_prefix(source->paths[i], path_prefix);
-    if (borrow_origins_add_path(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], relative_path)) added = true;
+    if (borrow_origins_add_full(out, source->roots[i], source->root_scopes[i], source->mutable_borrow[i], source->local_storage[i], relative_path, source->origin_paths[i])) added = true;
   }
   return added;
 }
@@ -193,15 +203,18 @@ static void borrow_origins_free(BorrowOrigins *origins) {
   for (size_t i = 0; i < origins->len; i++) {
     free(origins->roots[i]);
     free(origins->paths[i]);
+    free(origins->origin_paths[i]);
   }
   free(origins->roots);
   free(origins->root_scopes);
   free(origins->paths);
+  free(origins->origin_paths);
   free(origins->mutable_borrow);
   free(origins->local_storage);
   origins->roots = NULL;
   origins->root_scopes = NULL;
   origins->paths = NULL;
+  origins->origin_paths = NULL;
   origins->mutable_borrow = NULL;
   origins->local_storage = NULL;
   origins->len = 0;
@@ -375,7 +388,7 @@ static void scope_replace_borrow_origins_at(Scope *lookup_scope, Scope *binding_
   scope_clear_borrow_origins_at(count_lookup, &binding_scope->borrow_origins[index]);
   if (!origins) return;
   for (size_t origin_index = 0; origin_index < origins->len; origin_index++) {
-    borrow_origins_add_path(&binding_scope->borrow_origins[index], origins->roots[origin_index], origins->root_scopes[origin_index], origins->mutable_borrow[origin_index], origins->local_storage[origin_index], origins->paths[origin_index]);
+    borrow_origins_add_full(&binding_scope->borrow_origins[index], origins->roots[origin_index], origins->root_scopes[origin_index], origins->mutable_borrow[origin_index], origins->local_storage[origin_index], origins->paths[origin_index], origins->origin_paths[origin_index]);
     scope_adjust_origin_borrow_count(count_lookup, origins->roots[origin_index], origins->root_scopes[origin_index], origins->mutable_borrow[origin_index], 1);
   }
 }
@@ -386,7 +399,7 @@ static void scope_replace_borrow_origins_path_at(Scope *lookup_scope, Scope *bin
   BorrowOrigins *existing = &binding_scope->borrow_origins[index];
   for (size_t i = 0; i < existing->len; i++) {
     if (origin_path_is_within(existing->paths[i], path)) continue;
-    borrow_origins_add_path(&merged, existing->roots[i], existing->root_scopes[i], existing->mutable_borrow[i], existing->local_storage[i], existing->paths[i]);
+    borrow_origins_add_full(&merged, existing->roots[i], existing->root_scopes[i], existing->mutable_borrow[i], existing->local_storage[i], existing->paths[i], existing->origin_paths[i]);
   }
   borrow_origins_add_all_with_prefix(&merged, origins, path);
   scope_replace_borrow_origins_at(lookup_scope, binding_scope, index, &merged);
@@ -440,7 +453,7 @@ static bool scope_copy_borrow_origins(Scope *scope, const char *name, BorrowOrig
     for (size_t i = 0; i < cursor->len; i++) {
       if (strcmp(cursor->names[i], name) == 0) {
         for (size_t origin_index = 0; origin_index < cursor->borrow_origins[i].len; origin_index++) {
-          if (borrow_origins_add_path(out, cursor->borrow_origins[i].roots[origin_index], cursor->borrow_origins[i].root_scopes[origin_index], cursor->borrow_origins[i].mutable_borrow[origin_index], cursor->borrow_origins[i].local_storage[origin_index], cursor->borrow_origins[i].paths[origin_index])) added = true;
+          if (borrow_origins_add_full(out, cursor->borrow_origins[i].roots[origin_index], cursor->borrow_origins[i].root_scopes[origin_index], cursor->borrow_origins[i].mutable_borrow[origin_index], cursor->borrow_origins[i].local_storage[origin_index], cursor->borrow_origins[i].paths[origin_index], cursor->borrow_origins[i].origin_paths[origin_index])) added = true;
         }
         return added;
       }
@@ -1183,7 +1196,7 @@ static bool expr_borrow_origins(const Expr *expr, Scope *scope, BorrowOrigins *o
 static bool expr_reference_origins_as(const Program *program, const Expr *expr, Scope *scope, BorrowOrigins *origins, bool mut_borrow) {
   BorrowOrigins collected = {0};
   bool ok = expr_reference_origins(program, expr, scope, &collected);
-  if (ok) ok = borrow_origins_add_all_as(origins, &collected, mut_borrow);
+  if (ok) ok = borrow_origins_add_all_as_with_prefix(origins, &collected, mut_borrow, NULL);
   borrow_origins_free(&collected);
   return ok;
 }
