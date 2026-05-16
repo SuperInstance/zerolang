@@ -2617,6 +2617,8 @@ for (const [fixture, code] of [
   ["shape-field-reference-call-return-escape.0", /BOR002/],
   ["shape-field-reference-assignment-origin.0", /BOR001/],
   ["shape-field-reference-assignment-preserves-other-origin.0", /BOR001/],
+  ["shape-array-reference-index-origin.0", /BOR001/],
+  ["shape-array-reference-call-origin.0", /BOR001/],
   ["world-stream-used-as-value.0", /TYP001/],
 ]) {
   const result = await execFileAsync(zero, ["check", `conformance/native/fail/${fixture}`]).catch((error) => error);
