@@ -386,6 +386,17 @@ static Scope *scope_binding_scope(Scope *scope, const char *name) {
   return NULL;
 }
 
+static bool scope_binding_index_in_scope(Scope *scope, const char *name, size_t *out_index) {
+  if (!scope || !name) return false;
+  for (size_t i = 0; i < scope->len; i++) {
+    if (strcmp(scope->names[i], name) == 0) {
+      if (out_index) *out_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool scope_is_ancestor_or_self(const Scope *candidate, const Scope *scope) {
   for (const Scope *cursor = scope; cursor; cursor = cursor->parent) {
     if (cursor == candidate) return true;
@@ -400,6 +411,14 @@ static const char *scope_type(Scope *scope, const char *name) {
     }
   }
   return NULL;
+}
+
+static const char *scope_type_in_binding_scope(Scope *scope, Scope *binding_scope, const char *name) {
+  if (binding_scope) {
+    size_t index = 0;
+    if (scope_binding_index_in_scope(binding_scope, name, &index)) return binding_scope->types[index];
+  }
+  return scope_type(scope, name);
 }
 
 static bool scope_is_mutable(Scope *scope, const char *name) {
@@ -521,6 +540,18 @@ static void scope_set_value_provenance_path(Scope *scope, const char *name, cons
   }
 }
 
+static void scope_set_value_provenance_path_in_scope(Scope *lookup_scope, Scope *binding_scope, const char *name, const char *path, const ValueProvenance *origins) {
+  if (!lookup_scope || !name || !origins) return;
+  if (binding_scope) {
+    size_t index = 0;
+    if (scope_binding_index_in_scope(binding_scope, name, &index)) {
+      scope_replace_value_provenance_path_at(lookup_scope, binding_scope, index, path, origins);
+      return;
+    }
+  }
+  scope_set_value_provenance_path(lookup_scope, name, path, origins);
+}
+
 static void scope_clear_value_provenance_path(Scope *scope, const char *name, const char *path) {
   ValueProvenance empty = {0};
   scope_set_value_provenance_path(scope, name, path, &empty);
@@ -540,6 +571,20 @@ static bool scope_copy_value_provenance(Scope *scope, const char *name, ValuePro
     }
   }
   return false;
+}
+
+static bool scope_copy_value_provenance_from_scope(Scope *scope, Scope *binding_scope, const char *name, ValueProvenance *out) {
+  if (binding_scope) {
+    size_t index = 0;
+    bool added = false;
+    if (!scope_binding_index_in_scope(binding_scope, name, &index)) return false;
+    for (size_t origin_index = 0; origin_index < binding_scope->value_provenance[index].len; origin_index++) {
+      ProvenanceEntry *entry = &binding_scope->value_provenance[index].items[origin_index];
+      if (value_provenance_add_full(out, entry->origin.root, entry->origin.root_scope, entry->mutable_borrow, entry->local_storage, entry->value_path, entry->origin.path)) added = true;
+    }
+    return added;
+  }
+  return scope_copy_value_provenance(scope, name, out);
 }
 
 static ProvenanceScopeSnapshot *provenance_scope_snapshot_capture(Scope *scope) {
@@ -607,6 +652,12 @@ static void provenance_scope_snapshot_restore_union(const ProvenanceScopeSnapsho
       value_provenance_free(&merged);
     }
   }
+}
+
+static void provenance_scope_snapshot_restore_optional_branch(ProvenanceScopeSnapshot *before, ProvenanceScopeSnapshot *after, bool include_before, bool include_after) {
+  ProvenanceScopeSnapshot *states[] = {before, after};
+  bool include[] = {include_before, include_after};
+  provenance_scope_snapshot_restore_union(before, states, include, 2);
 }
 
 static void provenance_scope_snapshot_free(ProvenanceScopeSnapshot *snapshot) {
@@ -1251,6 +1302,7 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
 static const char *expr_type(const Program *program, const Expr *expr, Scope *scope);
 static bool is_int_type(const char *type);
 static void set_expr_resolved_type(const Expr *expr, const char *type);
+static bool place_storage_value_provenance_under_path(const Program *program, Scope *scope, const Place *place, const char *relative_path, ValueProvenance *out);
 
 static bool borrow_expr_source_is_local_storage(const Expr *borrowed, Scope *scope, const char *root) {
   if (!scope_is_param(scope, root)) return true;
@@ -3973,11 +4025,29 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
         char inner_type[128];
         snprintf(inner_type, sizeof(inner_type), "%.*s", (int)inner_len, inner);
         left_type = inner_type;
-        if (!check_expr_expected(program, expr->right, scope, diag, left_type)) return false;
+        ProvenanceScopeSnapshot *before_right = provenance_scope_snapshot_capture(scope);
+        if (!check_expr_expected(program, expr->right, scope, diag, left_type)) {
+          provenance_scope_snapshot_restore(before_right);
+          provenance_scope_snapshot_free(before_right);
+          return false;
+        }
+        ProvenanceScopeSnapshot *right_after = provenance_scope_snapshot_capture(scope);
+        provenance_scope_snapshot_restore_optional_branch(before_right, right_after, true, true);
+        provenance_scope_snapshot_free(right_after);
+        provenance_scope_snapshot_free(before_right);
         set_expr_resolved_type(expr, left_type);
         return true;
       }
-      if (!check_expr_expected(program, expr->right, scope, diag, left_type)) return false;
+      ProvenanceScopeSnapshot *before_right = provenance_scope_snapshot_capture(scope);
+      if (!check_expr_expected(program, expr->right, scope, diag, left_type)) {
+        provenance_scope_snapshot_restore(before_right);
+        provenance_scope_snapshot_free(before_right);
+        return false;
+      }
+      ProvenanceScopeSnapshot *right_after = provenance_scope_snapshot_capture(scope);
+      provenance_scope_snapshot_restore_optional_branch(before_right, right_after, true, true);
+      provenance_scope_snapshot_free(right_after);
+      provenance_scope_snapshot_free(before_right);
       const char *fallback_type = expr_type(program, expr->right, scope);
       if (!types_compatible(left_type, fallback_type)) {
         return set_diag_detail(diag, 3006, "rescue fallback type does not match recovered value", expr->line, expr->column, left_type, fallback_type, "return a fallback value with the same type as the fallible expression");
@@ -4646,14 +4716,36 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
       bool logical = strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0;
       if (!check_expr_expected(program, expr->left, scope, diag, expected && (is_int_type(expected) || is_float_type(expected)) ? expected : NULL)) return false;
       const char *left_type = expr_type(program, expr->left, scope);
-      const char *right_expected = (is_int_type(left_type) || is_float_type(left_type)) ? left_type : (logical ? "Bool" : NULL);
-      if (!check_expr_expected(program, expr->right, scope, diag, right_expected)) return false;
-      const char *right_type = expr_type(program, expr->right, scope);
       if (logical) {
+        ProvenanceScopeSnapshot *before_right = provenance_scope_snapshot_capture(scope);
+        if (!check_expr_expected(program, expr->right, scope, diag, "Bool")) {
+          provenance_scope_snapshot_restore(before_right);
+          provenance_scope_snapshot_free(before_right);
+          return false;
+        }
+        ProvenanceScopeSnapshot *right_after = provenance_scope_snapshot_capture(scope);
+        bool left_is_bool_literal = expr->left && expr->left->kind == EXPR_BOOL;
+        bool left_value = left_is_bool_literal && expr->left->bool_value;
+        bool include_before = true;
+        bool include_after = true;
+        if (left_is_bool_literal && strcmp(expr->text, "&&") == 0) {
+          include_before = !left_value;
+          include_after = left_value;
+        } else if (left_is_bool_literal && strcmp(expr->text, "||") == 0) {
+          include_before = left_value;
+          include_after = !left_value;
+        }
+        provenance_scope_snapshot_restore_optional_branch(before_right, right_after, include_before, include_after);
+        provenance_scope_snapshot_free(right_after);
+        provenance_scope_snapshot_free(before_right);
+        const char *right_type = expr_type(program, expr->right, scope);
         if (!is_bool_type(left_type) || !is_bool_type(right_type)) return set_diag_detail(diag, 3006, "logical operators require Bool operands", expr->line, expr->column, "Bool operands", "non-Bool operand", "compare values explicitly before using && or ||");
         set_expr_resolved_type(expr, "Bool");
         return true;
       }
+      const char *right_expected = (is_int_type(left_type) || is_float_type(left_type)) ? left_type : NULL;
+      if (!check_expr_expected(program, expr->right, scope, diag, right_expected)) return false;
+      const char *right_type = expr_type(program, expr->right, scope);
       if (comparison) {
         if (!types_compatible(left_type, right_type)) {
           return set_diag_detail(diag, 3006, "comparison operands must have matching types", expr->line, expr->column, left_type, right_type, "compare values with the same type");
@@ -5066,6 +5158,7 @@ static bool type_value_provenance_from_place(
   const char *type,
   Scope *scope,
   const char *root,
+  Scope *root_scope,
   const char *root_path,
   const char *value_path,
   ValueProvenance *origins,
@@ -5074,7 +5167,7 @@ static bool type_value_provenance_from_place(
   if (!program || !type || !root || !origins || depth > 16) return false;
   bool local_storage = reference_place_origin_is_local_storage(scope, root);
   if (type_is_named_generic(type, "ref") || type_is_named_generic(type, "mutref")) {
-    return value_provenance_add_full(origins, root, scope_binding_scope(scope, root), type_is_named_generic(type, "mutref"), local_storage, value_path, root_path);
+    return value_provenance_add_full(origins, root, root_scope ? root_scope : scope_binding_scope(scope, root), type_is_named_generic(type, "mutref"), local_storage, value_path, root_path);
   }
   const char *inner = NULL;
   size_t inner_len = 0;
@@ -5084,7 +5177,7 @@ static bool type_value_provenance_from_place(
     const char *prefix = type_has_generic_arg(type, "Maybe", &inner, &inner_len) ? "value" : NULL;
     char *next_value_path = origin_path_join(value_path, prefix);
     char *next_root_path = origin_path_join(root_path, prefix);
-    bool added = type_value_provenance_from_place(program, inner_type, scope, root, next_root_path, next_value_path, origins, depth + 1);
+    bool added = type_value_provenance_from_place(program, inner_type, scope, root, root_scope, next_root_path, next_value_path, origins, depth + 1);
     free(next_value_path);
     free(next_root_path);
     free(inner_type);
@@ -5094,7 +5187,7 @@ static bool type_value_provenance_from_place(
   if (fixed_array_type_parts(type, NULL, 0, element_type, sizeof(element_type))) {
     char *next_value_path = origin_path_join(value_path, "[*]");
     char *next_root_path = origin_path_join(root_path, "[*]");
-    bool added = type_value_provenance_from_place(program, element_type, scope, root, next_root_path, next_value_path, origins, depth + 1);
+    bool added = type_value_provenance_from_place(program, element_type, scope, root, root_scope, next_root_path, next_value_path, origins, depth + 1);
     free(next_value_path);
     free(next_root_path);
     return added;
@@ -5108,7 +5201,7 @@ static bool type_value_provenance_from_place(
       char *field_type = shape_field_type_for_owner(shape, type, field);
       char *next_value_path = origin_path_join(value_path, field->name);
       char *next_root_path = origin_path_join(root_path, field->name);
-      if (type_value_provenance_from_place(program, field_type, scope, root, next_root_path, next_value_path, origins, depth + 1)) added = true;
+      if (type_value_provenance_from_place(program, field_type, scope, root, root_scope, next_root_path, next_value_path, origins, depth + 1)) added = true;
       free(next_value_path);
       free(next_root_path);
       free(field_type);
@@ -5150,7 +5243,7 @@ static bool std_mem_get_value_provenance(const Program *program, const Expr *exp
   char element_type[160];
   if (!index_element_type(expr_type(program, collection, scope), element_type, sizeof(element_type))) return false;
   char *element_path = origin_path_join(path, "[*]");
-  added = type_value_provenance_from_place(program, element_type, scope, root, element_path, "value", origins, 0);
+  added = type_value_provenance_from_place(program, element_type, scope, root, scope_binding_scope(scope, root), element_path, "value", origins, 0);
   free(element_path);
   return added;
 }
@@ -5334,7 +5427,7 @@ static bool expr_reference_provenance(const Program *program, const Expr *expr, 
       call_result_value_provenance(program, expr, scope, origins)) return true;
   if (expr->kind == EXPR_IDENT) {
     const char *actual = scope_type(scope, expr->text);
-    if (actual && type_value_provenance_from_place(program, actual, scope, expr->text, NULL, NULL, origins, 0)) return true;
+    if (actual && type_value_provenance_from_place(program, actual, scope, expr->text, scope_binding_scope(scope, expr->text), NULL, NULL, origins, 0)) return true;
   }
   if (expr->kind == EXPR_CHECK) {
     ValueProvenance checked_provenance = {0};
@@ -5382,9 +5475,25 @@ static bool expr_reference_provenance(const Program *program, const Expr *expr, 
       ValueProvenance binding_origins = {0};
       bool has_binding_origins = scope_copy_value_provenance(scope, root, &binding_origins);
       bool added = value_provenance_add_all_under_path(origins, &binding_origins, path);
+      const char *root_type = scope_type(scope, root);
+      if (!added && has_binding_origins && origin_path_text(path)[0] &&
+          (type_is_named_generic(root_type, "ref") || type_is_named_generic(root_type, "mutref"))) {
+        PlaceVec places = {0};
+        for (size_t i = 0; i < binding_origins.len; i++) {
+          ProvenanceEntry *entry = &binding_origins.items[i];
+          if (origin_path_text(entry->value_path)[0]) continue;
+          char *place_path = origin_path_join(entry->origin.path, path);
+          place_vec_add(&places, entry->origin.root, entry->origin.root_scope, place_path);
+          free(place_path);
+        }
+        for (size_t i = 0; i < places.len; i++) {
+          if (place_storage_value_provenance_under_path(program, scope, &places.items[i], NULL, origins)) added = true;
+        }
+        place_vec_free(&places);
+      }
       value_provenance_free(&binding_origins);
       if (added) return true;
-      if (scope_has(scope, root) && type_value_provenance_from_place(program, member_type, scope, root, path, NULL, origins, 0)) return true;
+      if (scope_has(scope, root) && type_value_provenance_from_place(program, member_type, scope, root, scope_binding_scope(scope, root), path, NULL, origins, 0)) return true;
       if (has_binding_origins) return false;
     }
     if (type_is_named_generic(member_type, "ref") || type_is_named_generic(member_type, "mutref")) {
@@ -5405,9 +5514,25 @@ static bool expr_reference_provenance(const Program *program, const Expr *expr, 
       ValueProvenance binding_origins = {0};
       bool has_binding_origins = scope_copy_value_provenance(scope, root, &binding_origins);
       bool added = value_provenance_add_all_under_path(origins, &binding_origins, path);
+      const char *root_type = scope_type(scope, root);
+      if (!added && has_binding_origins && origin_path_text(path)[0] &&
+          (type_is_named_generic(root_type, "ref") || type_is_named_generic(root_type, "mutref"))) {
+        PlaceVec places = {0};
+        for (size_t i = 0; i < binding_origins.len; i++) {
+          ProvenanceEntry *entry = &binding_origins.items[i];
+          if (origin_path_text(entry->value_path)[0]) continue;
+          char *place_path = origin_path_join(entry->origin.path, path);
+          place_vec_add(&places, entry->origin.root, entry->origin.root_scope, place_path);
+          free(place_path);
+        }
+        for (size_t i = 0; i < places.len; i++) {
+          if (place_storage_value_provenance_under_path(program, scope, &places.items[i], NULL, origins)) added = true;
+        }
+        place_vec_free(&places);
+      }
       value_provenance_free(&binding_origins);
       if (added) return true;
-      if (scope_has(scope, root) && type_value_provenance_from_place(program, element_type, scope, root, path, NULL, origins, 0)) return true;
+      if (scope_has(scope, root) && type_value_provenance_from_place(program, element_type, scope, root, scope_binding_scope(scope, root), path, NULL, origins, 0)) return true;
       if (has_binding_origins) return false;
     }
     if (type_is_named_generic(element_type, "ref") || type_is_named_generic(element_type, "mutref")) {
@@ -5462,33 +5587,72 @@ static bool register_borrow_binding(const Program *program, const Stmt *stmt, Sc
   return true;
 }
 
+static bool collect_assignment_target_places(const Expr *target, Scope *scope, PlaceVec *places) {
+  if (!target || !scope || !places) return false;
+  char root[128];
+  char path[256];
+  if (!expr_binding_path(target, root, sizeof(root), path, sizeof(path)) || !scope_has(scope, root)) return false;
+
+  const char *root_type = scope_type(scope, root);
+  bool root_ref_like = type_is_named_generic(root_type, "ref") || type_is_named_generic(root_type, "mutref");
+  bool added = false;
+  if (root_ref_like && origin_path_text(path)[0]) {
+    ValueProvenance root_origins = {0};
+    if (scope_copy_value_provenance(scope, root, &root_origins)) {
+      for (size_t i = 0; i < root_origins.len; i++) {
+        ProvenanceEntry *entry = &root_origins.items[i];
+        if (origin_path_text(entry->value_path)[0]) continue;
+        char *target_path = origin_path_join(entry->origin.path, path);
+        if (place_vec_add(places, entry->origin.root, entry->origin.root_scope, target_path)) added = true;
+        free(target_path);
+      }
+    }
+    value_provenance_free(&root_origins);
+  }
+  if (added) return true;
+  return place_vec_add(places, root, scope_binding_scope(scope, root), path);
+}
+
 static bool update_borrow_assignment(const Program *program, const Expr *target, const Expr *value, Scope *scope, ZDiag *diag) {
   char target_root[128];
   char target_path[256];
   if (!target || !expr_binding_path(target, target_root, sizeof(target_root), target_path, sizeof(target_path)) || !scope_has(scope, target_root)) return true;
   const char *target_type = target->resolved_type ? target->resolved_type : scope_type(scope, target_root);
+  PlaceVec targets = {0};
+  if (!collect_assignment_target_places(target, scope, &targets)) return true;
   ValueProvenance origins = {0};
   if (expr_reference_provenance(program, value, scope, &origins)) {
-    Scope *target_scope = scope_binding_scope(scope, target_root);
-    for (size_t i = 0; i < origins.len; i++) {
-      ProvenanceEntry *entry = &origins.items[i];
-      Scope *root_scope = entry->origin.root_scope ? entry->origin.root_scope : scope_binding_scope(scope, entry->origin.root);
-      if (target_scope && root_scope && !scope_is_ancestor_or_self(root_scope, target_scope)) {
-        char actual[256];
-        snprintf(actual, sizeof(actual), "reference to shorter-lived local '%s'", entry->origin.root);
-        value_provenance_free(&origins);
-        return set_diag_detail(diag, 3030, "cannot assign a reference to a shorter-lived binding", value ? value->line : target->line, value ? value->column : target->column, "borrow source that outlives the reference binding", actual, "keep the reference binding in the same lexical scope as the borrowed value");
+    for (size_t target_index = 0; target_index < targets.len; target_index++) {
+      Scope *target_scope = targets.items[target_index].root_scope ? targets.items[target_index].root_scope : scope_binding_scope(scope, targets.items[target_index].root);
+      for (size_t i = 0; i < origins.len; i++) {
+        ProvenanceEntry *entry = &origins.items[i];
+        Scope *root_scope = entry->origin.root_scope ? entry->origin.root_scope : scope_binding_scope(scope, entry->origin.root);
+        if (target_scope && root_scope && !scope_is_ancestor_or_self(root_scope, target_scope)) {
+          char actual[256];
+          snprintf(actual, sizeof(actual), "reference to shorter-lived local '%s'", entry->origin.root);
+          value_provenance_free(&origins);
+          place_vec_free(&targets);
+          return set_diag_detail(diag, 3030, "cannot assign a reference to a shorter-lived binding", value ? value->line : target->line, value ? value->column : target->column, "borrow source that outlives the reference binding", actual, "keep the reference binding in the same lexical scope as the borrowed value");
+        }
       }
     }
     if (type_is_named_generic(target_type, "ref") || type_is_named_generic(target_type, "mutref")) {
       bool mut_borrow = type_is_named_generic(target_type, "mutref");
       for (size_t i = 0; i < origins.len; i++) origins.items[i].mutable_borrow = mut_borrow;
     }
-    scope_set_value_provenance_path(scope, target_root, target_path, &origins);
+    for (size_t target_index = 0; target_index < targets.len; target_index++) {
+      Place *place = &targets.items[target_index];
+      scope_set_value_provenance_path_in_scope(scope, place->root_scope, place->root, place->path, &origins);
+    }
   } else {
-    scope_clear_value_provenance_path(scope, target_root, target_path);
+    ValueProvenance empty = {0};
+    for (size_t target_index = 0; target_index < targets.len; target_index++) {
+      Place *place = &targets.items[target_index];
+      scope_set_value_provenance_path_in_scope(scope, place->root_scope, place->root, place->path, &empty);
+    }
   }
   value_provenance_free(&origins);
+  place_vec_free(&targets);
   return true;
 }
 
@@ -5723,7 +5887,7 @@ static bool seed_param_storage_value_provenance(const Program *program, Scope *s
     storage_type = ref_inner;
   }
   ValueProvenance seed = {0};
-  bool added = type_value_provenance_from_place(program, storage_type, scope, name, NULL, NULL, &seed, 0);
+  bool added = type_value_provenance_from_place(program, storage_type, scope, name, scope_binding_scope(scope, name), NULL, NULL, &seed, 0);
   if (added) scope_set_value_provenance(scope, name, &seed);
   value_provenance_free(&seed);
   return added;
@@ -5797,20 +5961,20 @@ static bool place_storage_value_provenance_under_path(const Program *program, Sc
   char *full_path = origin_path_join(place->path, relative_path);
 
   ValueProvenance existing = {0};
-  if (scope_copy_value_provenance(scope, place->root, &existing)) {
+  if (scope_copy_value_provenance_from_scope(scope, place->root_scope, place->root, &existing)) {
     if (value_provenance_add_all_under_path(out, &existing, full_path)) added = true;
   }
   value_provenance_free(&existing);
 
   if (!added) {
-    const char *root_type = scope_type(scope, place->root);
+    const char *root_type = scope_type_in_binding_scope(scope, place->root_scope, place->root);
     char storage_type[192];
     if (named_ref_inner_text(root_type, "ref", storage_type, sizeof(storage_type)) ||
         named_ref_inner_text(root_type, "mutref", storage_type, sizeof(storage_type))) {
       root_type = storage_type;
     }
     ValueProvenance typed = {0};
-    if (type_value_provenance_from_place(program, root_type, scope, place->root, NULL, NULL, &typed, 0)) {
+    if (type_value_provenance_from_place(program, root_type, scope, place->root, place->root_scope ? place->root_scope : scope_binding_scope(scope, place->root), NULL, NULL, &typed, 0)) {
       if (value_provenance_add_all_under_path(out, &typed, full_path)) added = true;
     }
     value_provenance_free(&typed);
@@ -5908,9 +6072,9 @@ static bool instantiate_call_provenance_entry(const Program *program, const Func
   return added;
 }
 
-static bool validate_installed_provenance_lifetimes(Scope *scope, const char *target_root, const ValueProvenance *origins, const Expr *site, ZDiag *diag) {
+static bool validate_installed_provenance_lifetimes(Scope *scope, const char *target_root, Scope *target_root_scope, const ValueProvenance *origins, const Expr *site, ZDiag *diag) {
   if (!scope || !target_root || !origins) return true;
-  Scope *target_scope = scope_binding_scope(scope, target_root);
+  Scope *target_scope = target_root_scope ? target_root_scope : scope_binding_scope(scope, target_root);
   for (size_t i = 0; i < origins->len; i++) {
     const ProvenanceEntry *entry = &origins->items[i];
     Scope *root_scope = entry->origin.root_scope ? entry->origin.root_scope : scope_binding_scope(scope, entry->origin.root);
@@ -5973,7 +6137,7 @@ static bool apply_call_param_storage_effect(
       place_storage_value_provenance_under_path(program, scope, target, NULL, &target_effects);
     }
     value_provenance_add_all(&target_effects, &instantiated);
-    if (!validate_installed_provenance_lifetimes(scope, target->root, &target_effects, call, diag)) {
+    if (!validate_installed_provenance_lifetimes(scope, target->root, target->root_scope, &target_effects, call, diag)) {
       value_provenance_free(&target_effects);
       value_provenance_free(&instantiated);
       place_vec_free(&targets);
@@ -5988,7 +6152,7 @@ static bool apply_call_param_storage_effect(
       place_storage_value_provenance_under_path(program, scope, target, NULL, &target_effects);
     }
     value_provenance_add_all(&target_effects, &instantiated);
-    scope_set_value_provenance_path(scope, target->root, target->path, &target_effects);
+    scope_set_value_provenance_path_in_scope(scope, target->root_scope, target->root, target->path, &target_effects);
     value_provenance_free(&target_effects);
   }
   value_provenance_free(&instantiated);
@@ -6066,6 +6230,45 @@ static bool apply_resolved_call_storage_effects(const Program *program, const Ex
 
 static bool apply_expr_call_storage_effects(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
   if (!program || !expr || !scope) return true;
+  if (expr->kind == EXPR_RESCUE) {
+    if (!apply_expr_call_storage_effects(program, expr->left, scope, diag)) return false;
+    ProvenanceScopeSnapshot *before_right = provenance_scope_snapshot_capture(scope);
+    if (!apply_expr_call_storage_effects(program, expr->right, scope, diag)) {
+      provenance_scope_snapshot_restore(before_right);
+      provenance_scope_snapshot_free(before_right);
+      return false;
+    }
+    ProvenanceScopeSnapshot *right_after = provenance_scope_snapshot_capture(scope);
+    provenance_scope_snapshot_restore_optional_branch(before_right, right_after, true, true);
+    provenance_scope_snapshot_free(right_after);
+    provenance_scope_snapshot_free(before_right);
+    return true;
+  }
+  if (expr->kind == EXPR_BINARY && expr->text && (strcmp(expr->text, "&&") == 0 || strcmp(expr->text, "||") == 0)) {
+    if (!apply_expr_call_storage_effects(program, expr->left, scope, diag)) return false;
+    ProvenanceScopeSnapshot *before_right = provenance_scope_snapshot_capture(scope);
+    if (!apply_expr_call_storage_effects(program, expr->right, scope, diag)) {
+      provenance_scope_snapshot_restore(before_right);
+      provenance_scope_snapshot_free(before_right);
+      return false;
+    }
+    ProvenanceScopeSnapshot *right_after = provenance_scope_snapshot_capture(scope);
+    bool left_is_bool_literal = expr->left && expr->left->kind == EXPR_BOOL;
+    bool left_value = left_is_bool_literal && expr->left->bool_value;
+    bool include_before = true;
+    bool include_after = true;
+    if (left_is_bool_literal && strcmp(expr->text, "&&") == 0) {
+      include_before = !left_value;
+      include_after = left_value;
+    } else if (left_is_bool_literal && strcmp(expr->text, "||") == 0) {
+      include_before = left_value;
+      include_after = !left_value;
+    }
+    provenance_scope_snapshot_restore_optional_branch(before_right, right_after, include_before, include_after);
+    provenance_scope_snapshot_free(right_after);
+    provenance_scope_snapshot_free(before_right);
+    return true;
+  }
   if (!apply_expr_call_storage_effects(program, expr->left, scope, diag) ||
       !apply_expr_call_storage_effects(program, expr->right, scope, diag)) return false;
   for (size_t i = 0; i < expr->args.len; i++) {
