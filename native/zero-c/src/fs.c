@@ -509,6 +509,27 @@ static bool import_ident_continue(char ch) {
   return isalnum((unsigned char)ch) || ch == '_';
 }
 
+static bool import_ident_is_keyword(const char *text, size_t len) {
+  const char *keywords[] = {
+    "as", "break", "check", "choice", "const", "continue", "defer", "else", "enum", "export", "extern", "false", "for", "fun",
+    "if", "import", "in", "let", "match", "meta", "mut", "null", "packed", "pub",
+    "raise", "raises", "rescue", "return", "shape", "static", "test", "true", "type",
+    "use", "var", "while", NULL
+  };
+  for (int i = 0; keywords[i]; i++) {
+    if (strlen(keywords[i]) == len && strncmp(text, keywords[i], len) == 0) return true;
+  }
+  return false;
+}
+
+static bool parse_use_import_ident_segment(const char *text, size_t len, size_t *pos) {
+  if (*pos >= len || !import_ident_start(text[*pos])) return false;
+  size_t start = *pos;
+  (*pos)++;
+  while (*pos < len && import_ident_continue(text[*pos])) (*pos)++;
+  return !import_ident_is_keyword(text + start, *pos - start);
+}
+
 static bool import_line_comment_at(const char *text, size_t pos, size_t len) {
   return pos + 1 < len && text[pos] == '/' && text[pos + 1] == '/';
 }
@@ -520,15 +541,11 @@ static void import_line_skip_ws(const char *text, size_t len, size_t *pos) {
 static bool parse_use_import_line_module(const char *text, size_t len, const char **module_out, size_t *module_len_out) {
   size_t pos = 0;
   import_line_skip_ws(text, len, &pos);
-  if (pos >= len || !import_ident_start(text[pos])) return false;
   size_t module_start = pos;
   for (;;) {
-    if (pos >= len || !import_ident_start(text[pos])) return false;
-    pos++;
-    while (pos < len && import_ident_continue(text[pos])) pos++;
+    if (!parse_use_import_ident_segment(text, len, &pos)) return false;
     if (pos < len && text[pos] == '.') {
       pos++;
-      if (pos >= len || !import_ident_start(text[pos])) return false;
       continue;
     }
     break;
@@ -541,9 +558,7 @@ static bool parse_use_import_line_module(const char *text, size_t len, const cha
     pos += 2;
     if (pos >= len || !isspace((unsigned char)text[pos])) return false;
     import_line_skip_ws(text, len, &pos);
-    if (pos >= len || !import_ident_start(text[pos])) return false;
-    pos++;
-    while (pos < len && import_ident_continue(text[pos])) pos++;
+    if (!parse_use_import_ident_segment(text, len, &pos)) return false;
     import_line_skip_ws(text, len, &pos);
     if (import_line_comment_at(text, pos, len)) pos = len;
     if (pos < len) return false;

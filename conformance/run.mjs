@@ -527,6 +527,16 @@ assert.match(agentSurfaceSplitUseBody.diagnostics[0].message, /expected import m
 assert.equal(agentSurfaceSplitUseBody.diagnostics[0].line, 1);
 assert.equal(agentSurfaceSplitUseBody.diagnostics[0].column, 8);
 
+const agentSurfaceKeywordUseFixture = `${outDir}/keyword-use.0`;
+await writeFile(agentSurfaceKeywordUseFixture, 'use pub\n\npub fun main(world: World) -> Void raises {\n    check world.out.write("keyword use parser fixture\\n")\n}\n');
+const agentSurfaceKeywordUse = await execFileAsync(zero, ["check", "--json", agentSurfaceKeywordUseFixture]).catch((error) => error);
+assert.notEqual(agentSurfaceKeywordUse.code, 0);
+const agentSurfaceKeywordUseBody = JSON.parse(agentSurfaceKeywordUse.stdout);
+assert.equal(agentSurfaceKeywordUseBody.diagnostics[0].code, "PAR100");
+assert.match(agentSurfaceKeywordUseBody.diagnostics[0].message, /expected import module name/);
+assert.equal(agentSurfaceKeywordUseBody.diagnostics[0].line, 1);
+assert.equal(agentSurfaceKeywordUseBody.diagnostics[0].column, 5);
+
 const agentSurfaceOwnedDropCheck = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/owned-drop-direct-backend-unsupported.0"]);
 const agentSurfaceOwnedDropCheckBody = JSON.parse(agentSurfaceOwnedDropCheck.stdout);
 assert.equal(agentSurfaceOwnedDropCheckBody.ok, true);
