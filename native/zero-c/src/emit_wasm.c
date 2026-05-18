@@ -438,6 +438,7 @@ static bool wasm_value_uses_memory_peek(const IrValue *value) {
 static bool wasm_value_uses_allocator(const IrValue *value) {
   if (!value) return false;
   if (value->kind == IR_VALUE_FIXED_BUF_ALLOC || value->kind == IR_VALUE_ALLOC_BYTES ||
+      value->kind == IR_VALUE_JSON_PARSE_BYTES ||
       value->kind == IR_VALUE_MAYBE_HAS || value->kind == IR_VALUE_MAYBE_VALUE ||
       value->kind == IR_VALUE_ARGS_GET || value->kind == IR_VALUE_ENV_GET ||
       value->kind == IR_VALUE_FS_READ_ALL) {
@@ -3295,6 +3296,10 @@ static bool wasm_emit_instr(ZBuf *body, const IrInstr *instr, const WasmEmitCont
         if (!ctx || ctx->json_result_local_index == (unsigned)-1) {
           return wasm_diag(diag, "direct wasm JSON parse result requires a scratch local", instr->line, instr->column, "missing JSON scratch local");
         }
+        if (!ctx->has_allocator || instr->value->local_index >= ctx->fun->local_len || ctx->fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return wasm_diag(diag, "direct wasm JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        unsigned alloc_base = wasm_local_index(ctx->fun, instr->value->local_index);
         if (!wasm_emit_value(body, instr->value, ctx, diag)) return false;
         wasm_emit_local_set(body, ctx->json_result_local_index);
         wasm_emit_local_get(body, ctx->json_result_local_index);
@@ -3304,11 +3309,29 @@ static bool wasm_emit_instr(ZBuf *body, const IrInstr *instr, const WasmEmitCont
         wasm_append_byte(body, 0x40);
         wasm_emit_maybe_scalar_clear(body, local_base);
         wasm_append_byte(body, 0x05);
+
+        wasm_emit_local_get(body, alloc_base + 2);
+        wasm_emit_local_get(body, ctx->json_result_local_index);
+        wasm_append_byte(body, 0xa7);
+        wasm_append_byte(body, 0x6a);
+        wasm_emit_local_set(body, ctx->alloc_next_local_index);
+
+        wasm_emit_local_get(body, ctx->alloc_next_local_index);
+        wasm_emit_local_get(body, alloc_base + 1);
+        wasm_append_byte(body, 0x4b);
+        wasm_append_byte(body, 0x04);
+        wasm_append_byte(body, 0x40);
+        wasm_emit_maybe_scalar_clear(body, local_base);
+        wasm_append_byte(body, 0x05);
+
         wasm_emit_i32_const(body, 1);
         wasm_emit_local_set(body, local_base);
         wasm_emit_local_get(body, ctx->json_result_local_index);
         wasm_append_byte(body, 0xa7);
         wasm_emit_local_set(body, local_base + 1);
+        wasm_emit_local_get(body, ctx->alloc_next_local_index);
+        wasm_emit_local_set(body, alloc_base + 2);
+        wasm_append_byte(body, 0x0b);
         wasm_append_byte(body, 0x0b);
         return true;
       }

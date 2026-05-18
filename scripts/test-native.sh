@@ -52,6 +52,15 @@ if [[ -n "$host_runtime_target" ]] && command -v cc >/dev/null 2>&1; then
   rm -rf "$runtime_cwd_dir"
 fi
 
+if command -v zig >/dev/null 2>&1; then
+  json_cross_out=".zero/native-test/std-json-bytes-linux-musl"
+  rm -f "$json_cross_out" "$json_cross_out.json" "$json_cross_out.zero.o" "$json_cross_out.zero-runtime.o"
+  bin/zero build --json --emit exe --target linux-musl-x64 conformance/native/pass/std-json-bytes.0 --out "$json_cross_out" > "$json_cross_out.json"
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (report.generatedCBytes!==0 || report.target!=="linux-musl-x64" || report.objectBackend.linking.targetLibraries!=="zero-runtime" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o")) process.exit(1);' "$json_cross_out.json"
+  test ! -f "$json_cross_out.zero.o"
+  test ! -f "$json_cross_out.zero-runtime.o"
+fi
+
 expected_output() {
   case "$1" in
     examples/hello.0) printf "hello from zero" ;;
@@ -176,6 +185,8 @@ run_native_or_gap conformance/native/pass/mutref-indexed-lvalues.0 .zero/native-
 run_native_or_gap conformance/native/pass/allocator-primitives.0 .zero/native-test/allocator-primitives "allocator primitives ok"
 run_native_or_gap conformance/native/pass/owned-byte-buffer.0 .zero/native-test/owned-byte-buffer "owned byte buffer ok"
 run_native_or_gap conformance/native/pass/std-mem-arena.0 .zero/native-test/std-mem-arena "arena ok"
+run_native_or_gap conformance/native/pass/std-json-duplicate-keys.0 .zero/native-test/std-json-duplicate-keys ""
+run_native_or_gap conformance/native/pass/std-json-allocator-capacity.0 .zero/native-test/std-json-allocator-capacity ""
 run_native_or_gap conformance/native/pass/fallibility-error-sets.0 .zero/native-test/fallibility-error-sets "fallibility error sets ok"
 run_native_or_gap conformance/native/pass/rescue-check.0 .zero/native-test/rescue-check "rescue ok"
 run_native_or_gap conformance/native/pass/std-fs-fallible.0 .zero/native-test/std-fs-fallible "fs named errors ok"
@@ -519,6 +530,18 @@ if bin/zero check conformance/native/fail/allocator-immutable-fixedbuf.0 2>.zero
   exit 1
 fi
 grep -q "STD003" .zero/native-test/allocator-immutable-fixedbuf.err
+
+if bin/zero check conformance/native/fail/std-json-parsebytes-raw-alloc.0 2>.zero/native-test/std-json-parsebytes-raw-alloc.err; then
+  echo "expected std-json-parsebytes-raw-alloc fixture to fail" >&2
+  exit 1
+fi
+grep -q "STD003" .zero/native-test/std-json-parsebytes-raw-alloc.err
+
+if bin/zero check conformance/native/fail/std-json-parsebytes-immutable-alloc.0 2>.zero/native-test/std-json-parsebytes-immutable-alloc.err; then
+  echo "expected std-json-parsebytes-immutable-alloc fixture to fail" >&2
+  exit 1
+fi
+grep -q "STD003" .zero/native-test/std-json-parsebytes-immutable-alloc.err
 
 if bin/zero check conformance/native/fail/owned-use-after-move.0 2>.zero/native-test/owned-use-after-move.err; then
   echo "expected owned-use-after-move fixture to fail" >&2

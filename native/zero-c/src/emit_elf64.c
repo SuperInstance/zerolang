@@ -2417,6 +2417,35 @@ static bool elf_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *ins
         elf_emit_store_local_slot_reg(text, local, 8, 0, true);
         return true;
       }
+      if (instr->value->kind == IR_VALUE_JSON_PARSE_BYTES) {
+        if (instr->value->local_index >= fun->local_len || fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return elf_diag(diag, "direct ELF64 JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        const IrLocal *alloc = &fun->locals[instr->value->local_index];
+        if (!elf_emit_value(text, fun, instr->value, ctx, diag)) return false;
+        elf_append_u8(text, 0x48);
+        elf_append_u8(text, 0x85);
+        elf_append_u8(text, 0xc0);
+        size_t fail = elf_emit_js_placeholder(text);
+        elf_append_u8(text, 0x50);
+        elf_emit_load_local_slot_reg(text, alloc, 12, 1, false);
+        elf_append_u8(text, 0x01);
+        elf_append_u8(text, 0xc1);
+        elf_emit_load_local_slot_reg(text, alloc, 8, 2, false);
+        elf_append_u8(text, 0x39);
+        elf_append_u8(text, 0xd1);
+        size_t overflow = elf_emit_jcc32_placeholder(text, 0x87);
+        elf_append_u8(text, 0x58);
+        elf_emit_maybe_scalar_store_rax(text, local);
+        elf_emit_store_local_slot_reg(text, alloc, 12, 1, false);
+        size_t end = elf_emit_jmp32_placeholder(text, 0xe9);
+        elf_patch_rel32(text, overflow, text->len);
+        elf_append_u8(text, 0x58);
+        elf_patch_rel32(text, fail, text->len);
+        elf_emit_maybe_scalar_clear(text, local);
+        elf_patch_rel32(text, end, text->len);
+        return true;
+      }
       if (!elf_emit_value(text, fun, instr->value, ctx, diag)) return false;
       elf_append_u8(text, 0x48);
       elf_append_u8(text, 0x85);

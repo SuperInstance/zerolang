@@ -4922,6 +4922,41 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
             zbuf_free(&std_name);
             return true;
           }
+          if (strcmp(std_name.data, "std.json.parse") == 0 || strcmp(std_name.data, "std.json.parseBytes") == 0) {
+            if (!check_expr(program, expr->args.items[0], scope, diag)) {
+              zbuf_free(&std_name);
+              return false;
+            }
+            const char *alloc_type = expr_type(program, expr->args.items[0], scope);
+            if (!is_allocator_type(alloc_type)) {
+              char message[256];
+              snprintf(message, sizeof(message), "%s expects an allocator primitive", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[0]->line, expr->args.items[0]->column, "NullAlloc or mutable FixedBufAlloc", alloc_type, "pass an explicit allocator; JSON parsing does not use a global allocator");
+            }
+            if (strcmp(alloc_type, "FixedBufAlloc") == 0 &&
+                (expr->args.items[0]->kind != EXPR_IDENT || !scope_is_mutable(scope, expr->args.items[0]->text))) {
+              char message[256];
+              snprintf(message, sizeof(message), "%s requires a mutable FixedBufAlloc binding", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[0]->line, expr->args.items[0]->column, "let mut allocator: FixedBufAlloc", "immutable or temporary FixedBufAlloc", "store the fixed buffer allocator in a let mut binding before parsing JSON");
+            }
+            const char *expected = strcmp(std_name.data, "std.json.parseBytes") == 0 ? "Span<u8>" : "String";
+            if (!check_expr_expected(program, expr->args.items[1], scope, diag, expected)) {
+              zbuf_free(&std_name);
+              return false;
+            }
+            const char *actual = expr_type(program, expr->args.items[1], scope);
+            if (!types_compatible(expected, actual)) {
+              char message[256];
+              snprintf(message, sizeof(message), "argument 2 to '%s' has incompatible type", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[1]->line, expr->args.items[1]->column, expected, actual, "pass a compatible JSON payload");
+            }
+            set_expr_resolved_type(expr, "Maybe<JsonDoc>");
+            zbuf_free(&std_name);
+            return true;
+          }
           for (size_t i = 0; i < expr->args.len; i++) {
             const char *expected = std_call_arg_type(std_name.data, i);
             if (!check_expr_expected(program, expr->args.items[i], scope, diag, expected)) {

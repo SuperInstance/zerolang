@@ -9133,8 +9133,18 @@ int main(int argc, char **argv) {
     bool needs_http_runtime = runtime_import_audit_uses_http_provider(&runtime_audit);
     const char *object_emitter = z_direct_object_emitter(target);
     bool runtime_object_emitter_supported = object_emitter && (strcmp(object_emitter, "zero-macho64") == 0 || strcmp(object_emitter, "zero-elf64") == 0);
-    if (!z_target_is_host(target) || !runtime_object_emitter_supported || ship_command) {
-      int rc = return_direct_backend_error(&command, &input, target, "exe", ship_command ? "host runtime link plan is not wired into ship yet; use zero build or zero run" : "host runtime helpers currently require the host Mach-O or ELF64 object link plan", &ir, &program);
+    if (ship_command) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "host runtime link plan is not wired into ship yet; use zero build or zero run", &ir, &program);
+      z_free_source(&input);
+      return rc;
+    }
+    if (!runtime_object_emitter_supported) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "runtime helpers currently require the Mach-O or ELF64 object link plan", &ir, &program);
+      z_free_source(&input);
+      return rc;
+    }
+    if (needs_http_runtime && !z_target_is_host(target)) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "HTTP runtime provider is host-only for direct executable links", &ir, &program);
       z_free_source(&input);
       return rc;
     }

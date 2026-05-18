@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { jsonByteTokenCount } from "./json-byte-token-count.mjs";
 
 const execFileAsync = promisify(execFile);
 const outDir = ".zero/wasm-runtime-smoke";
@@ -62,22 +63,9 @@ function makeRuntime({ args = [], env = [], files = new Map(), dirs = new Set(["
     return Buffer.from(instance.exports.memory.buffer, ptr, len).toString("utf8");
   }
 
-  function countJsonTokens(value) {
-    let count = 1;
-    if (Array.isArray(value)) {
-      for (const item of value) count += countJsonTokens(item);
-    } else if (value !== null && typeof value === "object") {
-      for (const key of Object.keys(value)) {
-        count += 1;
-        count += countJsonTokens(value[key]);
-      }
-    }
-    return count;
-  }
-
   function parseJsonBytes(ptr, len) {
     try {
-      return BigInt(countJsonTokens(JSON.parse(readString(ptr, len))));
+      return jsonByteTokenCount(new Uint8Array(instance.exports.memory.buffer, ptr, len));
     } catch {
       return -1n;
     }
@@ -286,6 +274,24 @@ assert(WebAssembly.Module.imports(new WebAssembly.Module(jsonBytesWebBuild.bytes
   entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
 ));
 instantiateAndRun(jsonBytesWebBuild.bytes, makeRuntime({
+  expectedOutput: "",
+}));
+
+const jsonDuplicateKeysWebBuild = await buildWasm({
+  target: "wasm32-web",
+  input: "conformance/native/pass/std-json-duplicate-keys.0",
+  name: "std-json-duplicate-keys-web",
+});
+instantiateAndRun(jsonDuplicateKeysWebBuild.bytes, makeRuntime({
+  expectedOutput: "",
+}));
+
+const jsonAllocatorCapacityWebBuild = await buildWasm({
+  target: "wasm32-web",
+  input: "conformance/native/pass/std-json-allocator-capacity.0",
+  name: "std-json-allocator-capacity-web",
+});
+instantiateAndRun(jsonAllocatorCapacityWebBuild.bytes, makeRuntime({
   expectedOutput: "",
 }));
 

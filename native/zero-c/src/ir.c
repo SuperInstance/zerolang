@@ -1563,13 +1563,26 @@ static bool ir_lower_expr(const Program *program, IrProgram *ir, const IrFunctio
         return true;
       }
       if (strcmp(callee_name, "std.json.parseBytes") == 0 && expr->args.len == 2) {
+        if (!expr->args.items[0] || expr->args.items[0]->kind != EXPR_IDENT) {
+          free(callee_name);
+          ir_mark_unsupported(ir, "direct backend std.json.parseBytes expects a mutable FixedBufAlloc local", expr->args.items[0] ? expr->args.items[0]->line : expr->line, expr->args.items[0] ? expr->args.items[0]->column : expr->column, "non-local allocator");
+          return false;
+        }
+        const IrLocal *alloc = ir_function_find_local(fun, expr->args.items[0]->text);
+        if (!alloc || alloc->type != IR_TYPE_ALLOC || !alloc->is_mutable) {
+          free(callee_name);
+          ir_mark_unsupported(ir, "direct backend std.json.parseBytes expects a mutable FixedBufAlloc local", expr->args.items[0]->line, expr->args.items[0]->column, "non-mutable allocator");
+          return false;
+        }
         IrValue *view = NULL;
         if (!ir_lower_byte_view(program, ir, fun, expr->args.items[1], &view)) {
           free(callee_name);
           return false;
         }
         IrValue *value = ir_new_value(ir, IR_VALUE_JSON_PARSE_BYTES, IR_TYPE_I64, expr->line, expr->column);
+        value->local_index = alloc->index;
         value->left = view;
+        ir->direct_allocator_helper_count = ir->direct_allocator_helper_count < 2 ? 2 : ir->direct_allocator_helper_count;
         if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
         if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
         free(callee_name);

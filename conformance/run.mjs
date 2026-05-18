@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { jsonByteTokenCount } from "../scripts/json-byte-token-count.mjs";
 
 if (process.env.ZERO_NATIVE_TEST_SANDBOX !== "1" && process.env.ZERO_NATIVE_TEST_ALLOW_LOCAL !== "1") {
   console.error("conformance emits native test artifacts; run `npm run conformance` for Vercel Sandbox execution or set ZERO_NATIVE_TEST_ALLOW_LOCAL=1 to opt into local artifacts.");
@@ -25,27 +26,13 @@ function runnableExeArgs(input, out) {
 
 await mkdir(outDir, { recursive: true });
 
-function countJsonTokens(value) {
-  let count = 1;
-  if (Array.isArray(value)) {
-    for (const item of value) count += countJsonTokens(item);
-  } else if (value !== null && typeof value === "object") {
-    for (const key of Object.keys(value)) {
-      count += 1;
-      count += countJsonTokens(value[key]);
-    }
-  }
-  return count;
-}
-
 async function instantiateJsonRuntimeWasm(bytes) {
   let instance;
   const imports = {
     zero_runtime: {
       zero_json_parse_bytes(ptr, len) {
         try {
-          const text = Buffer.from(instance.exports.memory.buffer, ptr, len).toString("utf8");
-          return BigInt(countJsonTokens(JSON.parse(text)));
+          return jsonByteTokenCount(new Uint8Array(instance.exports.memory.buffer, ptr, len));
         } catch {
           return -1n;
         }
@@ -285,6 +272,8 @@ for (const fixture of [
   "conformance/native/pass/std-http-response-helpers.0",
   "conformance/native/pass/std-data-formats.0",
   "conformance/native/pass/std-json-bytes.0",
+  "conformance/native/pass/std-json-duplicate-keys.0",
+  "conformance/native/pass/std-json-allocator-capacity.0",
   "conformance/native/pass/std-platform-basics.0",
   "conformance/native/pass/std-mem-arrays.0",
   "conformance/native/pass/array-repeat-literal.0",
@@ -904,6 +893,24 @@ assert(WebAssembly.Module.imports(new WebAssembly.Module(directJsonBytesBytes)).
 ));
 const directJsonBytesInstance = await instantiateJsonRuntimeWasm(directJsonBytesBytes);
 assert.equal(directJsonBytesInstance.instance.exports.main(), 0);
+
+const directJsonDuplicateKeysOut = `${outDir}/direct-json-duplicate-keys`;
+const directJsonDuplicateKeysJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-duplicate-keys.0", "--out", directJsonDuplicateKeysOut]);
+const directJsonDuplicateKeysBody = JSON.parse(directJsonDuplicateKeysJson.stdout);
+assert.equal(directJsonDuplicateKeysBody.generatedCBytes, 0);
+assert.equal(directJsonDuplicateKeysBody.objectBackend.objectEmission.path, "direct-wasm");
+const directJsonDuplicateKeysBytes = await readFile(`${directJsonDuplicateKeysOut}.wasm`);
+const directJsonDuplicateKeysInstance = await instantiateJsonRuntimeWasm(directJsonDuplicateKeysBytes);
+assert.equal(directJsonDuplicateKeysInstance.instance.exports.main(), 0);
+
+const directJsonAllocatorCapacityOut = `${outDir}/direct-json-allocator-capacity`;
+const directJsonAllocatorCapacityJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-allocator-capacity.0", "--out", directJsonAllocatorCapacityOut]);
+const directJsonAllocatorCapacityBody = JSON.parse(directJsonAllocatorCapacityJson.stdout);
+assert.equal(directJsonAllocatorCapacityBody.generatedCBytes, 0);
+assert.equal(directJsonAllocatorCapacityBody.objectBackend.objectEmission.path, "direct-wasm");
+const directJsonAllocatorCapacityBytes = await readFile(`${directJsonAllocatorCapacityOut}.wasm`);
+const directJsonAllocatorCapacityInstance = await instantiateJsonRuntimeWasm(directJsonAllocatorCapacityBytes);
+assert.equal(directJsonAllocatorCapacityInstance.instance.exports.main(), 0);
 
 const directMutSpanLenOut = `${outDir}/direct-mutspan-len`;
 const directMutSpanLenJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "examples/direct-mutspan-len.0", "--out", directMutSpanLenOut]);
@@ -2380,6 +2387,14 @@ assert.match(stdHttpErrorRawInt.stderr, /TYP002/);
 const stdHttpFetchRawTimeout = await execFileAsync(zero, ["check", "conformance/native/fail/std-http-fetch-raw-timeout.0"]).catch((error) => error);
 assert.notEqual(stdHttpFetchRawTimeout.code, 0);
 assert.match(stdHttpFetchRawTimeout.stderr, /STD003/);
+
+const stdJsonParseBytesRawAlloc = await execFileAsync(zero, ["check", "conformance/native/fail/std-json-parsebytes-raw-alloc.0"]).catch((error) => error);
+assert.notEqual(stdJsonParseBytesRawAlloc.code, 0);
+assert.match(stdJsonParseBytesRawAlloc.stderr, /STD003/);
+
+const stdJsonParseBytesImmutableAlloc = await execFileAsync(zero, ["check", "conformance/native/fail/std-json-parsebytes-immutable-alloc.0"]).catch((error) => error);
+assert.notEqual(stdJsonParseBytesImmutableAlloc.code, 0);
+assert.match(stdJsonParseBytesImmutableAlloc.stderr, /STD003/);
 
 const genericMemLenNonSpan = await execFileAsync(zero, ["check", "conformance/native/fail/generic-mem-len-non-span.0"]).catch((error) => error);
 assert.notEqual(genericMemLenNonSpan.code, 0);

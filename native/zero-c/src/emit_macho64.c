@@ -1395,6 +1395,32 @@ static bool macho_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *i
         macho_emit_store_local_x(text, fun, 8, instr->local_index, 8, frame_size);
         return true;
       }
+      if (instr->value->kind == IR_VALUE_JSON_PARSE_BYTES) {
+        if (instr->value->local_index >= fun->local_len || fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return macho_diag_at(diag, "direct AArch64 Mach-O JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        if (!macho_emit_value_to_reg(text, fun, instr->value, 8, frame_size, ctx, diag)) return false;
+        macho_emit_cmp_x(text, 8, 31);
+        size_t fail = macho_emit_b_cond_placeholder(text, 11); // signed less than
+        macho_emit_load_local_w(text, fun, 9, instr->value->local_index, 12, frame_size);
+        macho_emit_mov_w(text, 10, 8);
+        macho_emit_binary_w(text, IR_BIN_ADD, 11, 9, 10);
+        macho_emit_load_local_w(text, fun, 12, instr->value->local_index, 8, frame_size);
+        macho_emit_cmp_w(text, 11, 12);
+        size_t overflow = macho_emit_b_cond_placeholder(text, 8); // unsigned higher
+        macho_emit_movz_w(text, 9, 1);
+        macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+        macho_emit_store_local_x(text, fun, 8, instr->local_index, 8, frame_size);
+        macho_emit_store_local_w(text, fun, 11, instr->value->local_index, 12, frame_size);
+        size_t end = macho_emit_b_placeholder(text);
+        macho_patch_cond19(text, fail, text->len);
+        macho_patch_cond19(text, overflow, text->len);
+        macho_emit_movz_w(text, 9, 0);
+        macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+        macho_emit_store_local_x(text, fun, 9, instr->local_index, 8, frame_size);
+        macho_patch_branch26(text, end, text->len);
+        return true;
+      }
       if (!macho_emit_value_to_reg(text, fun, instr->value, 8, frame_size, ctx, diag)) return false;
       macho_emit_cmp_x(text, 8, 31);
       size_t fail = macho_emit_b_cond_placeholder(text, 11); // signed less than
