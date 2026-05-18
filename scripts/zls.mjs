@@ -471,11 +471,11 @@ async function selfTest() {
       diagnostics: [{
         code: "TAR002",
         message: "target does not provide hosted filesystem capability",
-        data: { repair: { id: "remove-hosted-fs-or-use-host-target", summary: "Build for the host target or move hosted std.fs usage behind a host-only entry point." }, fixSafety: "requires-human-review" },
+        data: { repair: { id: "choose-target-with-required-capability", summary: "Build for a target with the required capability or move the code behind a target-specific entry point." }, fixSafety: "requires-human-review" },
       }],
     },
   });
-  assert(targetActions.some((action) => action.data.id === "remove-hosted-fs-or-use-host-target"));
+  assert(targetActions.some((action) => action.data.id === "choose-target-with-required-capability"));
   const typeAnnotationActions = await codeActions({
     textDocument: { uri },
     context: {

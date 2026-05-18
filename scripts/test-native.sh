@@ -18,6 +18,49 @@ make -C native/zero-c
 
 mkdir -p .zero/native-test .zero/conformance
 
+host_runtime_target=""
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) host_runtime_target="darwin-arm64" ;;
+  Linux:x86_64) host_runtime_target="linux-x64" ;;
+esac
+
+if [[ -n "$host_runtime_target" ]] && command -v cc >/dev/null 2>&1; then
+  runtime_cwd_dir="/tmp/zero-runtime-cwd-$$"
+  runtime_cwd_out="$runtime_cwd_dir/std-json-bytes"
+  rm -rf "$runtime_cwd_dir"
+  mkdir -p "$runtime_cwd_dir"
+  (
+    cd "$runtime_cwd_dir"
+    "$root/.zero/bin/zero" build --json --emit exe --target "$host_runtime_target" "$root/conformance/native/pass/std-json-bytes.0" --out "$runtime_cwd_out" > "$runtime_cwd_out.json"
+  )
+  set +e
+  "$runtime_cwd_out"
+  runtime_cwd_status=$?
+  set -e
+  test "$runtime_cwd_status" = "0"
+  test ! -f "$runtime_cwd_out.zero.o"
+  test ! -f "$runtime_cwd_out.zero-runtime.o"
+  test ! -f "$runtime_cwd_out.zero-runtime.o.zero_runtime.c"
+  test ! -e "$runtime_cwd_out.zero-runtime.o.include"
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (report.generatedCBytes!==0 || report.objectBackend.linking.targetLibraries!=="zero-runtime" || report.objectBackend.linking.externalToolchain!=="cc" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o") || report.objectBackend.directFacts.runtimeHelperCount!==1) process.exit(1);' "$runtime_cwd_out.json"
+  set +e
+  ZERO_CC=/usr/bin/false "$root/.zero/bin/zero" build --json --emit exe --target "$host_runtime_target" "$root/conformance/native/pass/std-json-bytes.0" --out "$runtime_cwd_out-bad" > "$runtime_cwd_out-bad.json" 2>/dev/null
+  runtime_zero_cc_status=$?
+  set -e
+  test "$runtime_zero_cc_status" != "0"
+  grep -q "host runtime object build failed" "$runtime_cwd_out-bad.json"
+  rm -rf "$runtime_cwd_dir"
+fi
+
+if command -v zig >/dev/null 2>&1; then
+  json_cross_out=".zero/native-test/std-json-bytes-linux-musl"
+  rm -f "$json_cross_out" "$json_cross_out.json" "$json_cross_out.zero.o" "$json_cross_out.zero-runtime.o"
+  bin/zero build --json --emit exe --target linux-musl-x64 conformance/native/pass/std-json-bytes.0 --out "$json_cross_out" > "$json_cross_out.json"
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (report.generatedCBytes!==0 || report.target!=="linux-musl-x64" || report.objectBackend.linking.targetLibraries!=="zero-runtime" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o")) process.exit(1);' "$json_cross_out.json"
+  test ! -f "$json_cross_out.zero.o"
+  test ! -f "$json_cross_out.zero-runtime.o"
+fi
+
 expected_output() {
   case "$1" in
     examples/hello.0) printf "hello from zero" ;;
@@ -142,12 +185,16 @@ run_native_or_gap conformance/native/pass/mutref-indexed-lvalues.0 .zero/native-
 run_native_or_gap conformance/native/pass/allocator-primitives.0 .zero/native-test/allocator-primitives "allocator primitives ok"
 run_native_or_gap conformance/native/pass/owned-byte-buffer.0 .zero/native-test/owned-byte-buffer "owned byte buffer ok"
 run_native_or_gap conformance/native/pass/std-mem-arena.0 .zero/native-test/std-mem-arena "arena ok"
+run_native_or_gap conformance/native/pass/std-json-duplicate-keys.0 .zero/native-test/std-json-duplicate-keys ""
+run_native_or_gap conformance/native/pass/std-json-allocator-capacity.0 .zero/native-test/std-json-allocator-capacity ""
 run_native_or_gap conformance/native/pass/fallibility-error-sets.0 .zero/native-test/fallibility-error-sets "fallibility error sets ok"
 run_native_or_gap conformance/native/pass/rescue-check.0 .zero/native-test/rescue-check "rescue ok"
 run_native_or_gap conformance/native/pass/std-fs-fallible.0 .zero/native-test/std-fs-fallible "fs named errors ok"
 run_native_or_gap conformance/native/pass/std-fs-fallible-resources.0 .zero/native-test/std-fs-fallible-resources "fs fallible resources ok"
 run_native_or_gap conformance/native/pass/std-cli-helpers.0 .zero/native-test/std-cli-helpers "cli helpers ok"
-std_args_run_output="$(bin/zero run conformance/native/pass/std-args.0 -- agent-arg extra)"
+std_args_run_exe="/tmp/zero-std-args-run-$$"
+std_args_run_output="$(bin/zero run --out "$std_args_run_exe" conformance/native/pass/std-args.0 -- agent-arg extra)"
+rm -f "$std_args_run_exe"
 if [[ "$std_args_run_output" != "agent-arg" ]]; then
   echo "zero run output mismatch for conformance/native/pass/std-args.0" >&2
   echo "native:   $std_args_run_output" >&2
@@ -164,6 +211,45 @@ if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]; then
     echo "expected: agent-arg" >&2
     exit 1
   fi
+  rm -f .zero/native-test/std-http-response-helpers-linux .zero/native-test/std-http-response-helpers-linux.json .zero/native-test/std-http-response-helpers-linux.zero.o .zero/native-test/std-http-response-helpers-linux.zero-runtime.o
+  if ! bin/zero build --json --emit exe --target linux-x64 conformance/native/pass/std-http-response-helpers.0 --out .zero/native-test/std-http-response-helpers-linux > .zero/native-test/std-http-response-helpers-linux.json; then
+    cat .zero/native-test/std-http-response-helpers-linux.json >&2
+    exit 1
+  fi
+  set +e
+  .zero/native-test/std-http-response-helpers-linux
+  std_http_response_helpers_linux_status=$?
+  set -e
+  test "$std_http_response_helpers_linux_status" = "29"
+  test ! -f .zero/native-test/std-http-response-helpers-linux.zero.o
+  test ! -f .zero/native-test/std-http-response-helpers-linux.zero-runtime.o
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(".zero/native-test/std-http-response-helpers-linux.json","utf8")); if (report.generatedCBytes!==0 || report.objectBackend.objectEmission.path!=="direct-elf64-object" || report.objectBackend.linking.targetLibraries!=="zero-runtime" || report.objectBackend.linking.externalToolchain!=="cc" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o") || report.objectBackend.directFacts.runtimeHelperCount!==1) process.exit(1);'
+  curl_link_smoke_src="/tmp/zero-curl-link-smoke-$$.c"
+  curl_link_smoke_exe="/tmp/zero-curl-link-smoke-$$"
+  cat > "$curl_link_smoke_src" <<'SOURCE'
+#include <curl/curl.h>
+int main(void) {
+  return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? 0 : 1;
+}
+SOURCE
+  if cc "$curl_link_smoke_src" -lcurl -o "$curl_link_smoke_exe" >/dev/null 2>&1; then
+    rm -f .zero/native-test/std-http-fetch-linux .zero/native-test/std-http-fetch-linux.json .zero/native-test/std-http-fetch-linux.zero.o .zero/native-test/std-http-fetch-linux.zero-runtime.o .zero/native-test/std-http-fetch-linux.zero-http-curl.o
+    if ! bin/zero build --json --emit exe --target linux-x64 conformance/native/pass/std-http-fetch.0 --out .zero/native-test/std-http-fetch-linux > .zero/native-test/std-http-fetch-linux.json; then
+      cat .zero/native-test/std-http-fetch-linux.json >&2
+      exit 1
+    fi
+    set +e
+    .zero/native-test/std-http-fetch-linux
+    std_http_fetch_linux_status=$?
+    set -e
+    test "$std_http_fetch_linux_status" = "23"
+    test ! -f .zero/native-test/std-http-fetch-linux.zero.o
+    test ! -f .zero/native-test/std-http-fetch-linux.zero-runtime.o
+    test ! -f .zero/native-test/std-http-fetch-linux.zero-http-curl.o
+    node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(".zero/native-test/std-http-fetch-linux.json","utf8")); if (report.generatedCBytes!==0 || report.objectBackend.objectEmission.path!=="direct-elf64-object" || report.objectBackend.linking.targetLibraries!=="zero-runtime,curl" || report.objectBackend.linking.externalToolchain!=="cc" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o") || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_http_curl.o") || !report.objectBackend.linkerPlan.systemLibraries.includes("curl") || report.objectBackend.directFacts.runtimeHelperCount!==2 || !(report.objectBackend.directFacts.runtime.readonlyDataBytes > 0)) process.exit(1);'
+    node scripts/http-runtime-smoke.mjs
+  fi
+  rm -f "$curl_link_smoke_src" "$curl_link_smoke_exe"
 fi
 
 bin/zero check conformance/native/pass/std-env.0 >/dev/null
@@ -239,6 +325,14 @@ if bin/zero check --target wasm32-web conformance/native/pass/std-fs-readall.0 >
   exit 1
 fi
 grep -q "TAR002" .zero/native-test/std-fs-target-unsupported.err
+bin/zero check --target linux-musl-x64 conformance/native/pass/std-http-metadata-neutral.0 >/dev/null
+bin/zero graph --json --target linux-musl-x64 conformance/native/pass/std-http-metadata-neutral.0 > .zero/native-test/std-http-metadata-neutral-graph.json
+grep -q '"requiresCapabilities": \["memory", "parse"\]' .zero/native-test/std-http-metadata-neutral-graph.json
+if bin/zero check --target linux-musl-x64 conformance/native/pass/std-http-fetch.0 >/dev/null 2>.zero/native-test/std-http-target-unsupported.err; then
+  echo "expected hosted std.http to fail on target without net" >&2
+  exit 1
+fi
+grep -q "TAR002" .zero/native-test/std-http-target-unsupported.err
 bin/zero tokens --json conformance/lexer/compiler-smoke.0 > .zero/native-test/lexer-tokens.json
 node <<'NODE'
 const assert = require("node:assert/strict");
@@ -437,6 +531,18 @@ if bin/zero check conformance/native/fail/allocator-immutable-fixedbuf.0 2>.zero
 fi
 grep -q "STD003" .zero/native-test/allocator-immutable-fixedbuf.err
 
+if bin/zero check conformance/native/fail/std-json-parsebytes-raw-alloc.0 2>.zero/native-test/std-json-parsebytes-raw-alloc.err; then
+  echo "expected std-json-parsebytes-raw-alloc fixture to fail" >&2
+  exit 1
+fi
+grep -q "STD003" .zero/native-test/std-json-parsebytes-raw-alloc.err
+
+if bin/zero check conformance/native/fail/std-json-parsebytes-immutable-alloc.0 2>.zero/native-test/std-json-parsebytes-immutable-alloc.err; then
+  echo "expected std-json-parsebytes-immutable-alloc fixture to fail" >&2
+  exit 1
+fi
+grep -q "STD003" .zero/native-test/std-json-parsebytes-immutable-alloc.err
+
 if bin/zero check conformance/native/fail/owned-use-after-move.0 2>.zero/native-test/owned-use-after-move.err; then
   echo "expected owned-use-after-move fixture to fail" >&2
   exit 1
@@ -590,6 +696,14 @@ for (const capability of expected) {
     process.exit(1);
   }
 }
+
+if (hosted.httpRuntime?.status !== "supported" ||
+    hosted.httpRuntime?.provider !== "curl" ||
+    hosted.httpRuntime?.tlsVerification !== true ||
+    hosted.httpRuntime?.customCa?.env !== "ZERO_HTTP_TEST_CA_BUNDLE") {
+  console.error("hosted target missing HTTP/TLS provider facts");
+  process.exit(1);
+}
 NODE
 grep -q '"objectFormat": "elf"' .zero/native-test/targets.json
 grep -q '"name":"web","available":false' .zero/native-test/targets.json
@@ -599,7 +713,7 @@ grep -q '"name": "wasm32-web"' .zero/native-test/targets.json
 grep -q '"crossCompiler":"emcc"' .zero/native-test/targets.json
 grep -q '"sysrootStatus":"missing"' .zero/native-test/targets.json
 bin/zero explain TAR002 > .zero/native-test/explain-tar002.txt
-grep -q "Hosted filesystem unavailable" .zero/native-test/explain-tar002.txt
+grep -q "Target capability unavailable" .zero/native-test/explain-tar002.txt
 bin/zero explain --json TYP009 > .zero/native-test/explain-typ009.json
 grep -q '"repair"' .zero/native-test/explain-typ009.json
 bin/zero fix --plan --json conformance/native/fail/mem-copy-immutable-dst.0 > .zero/native-test/fix-plan.json
@@ -1720,7 +1834,7 @@ grep -q '"path":"direct-macho64-object"' .zero/native-test/direct-call-add-darwi
 grep -q '"selectedEmitter":"zero-macho64"' .zero/native-test/direct-call-add-darwin.json
 rm -f .zero/native-test/direct-byte-view-reloc-darwin.o .zero/native-test/direct-byte-view-reloc-darwin.o.c
 bin/zero build --json --emit obj --target darwin-arm64 examples/direct-byte-view-reloc.0 --out .zero/native-test/direct-byte-view-reloc-darwin.o > .zero/native-test/direct-byte-view-reloc-darwin.json
-node -e 'const fs=require("fs"); const b=fs.readFileSync(".zero/native-test/direct-byte-view-reloc-darwin.o"); if (b.readUInt32LE(0)!==0xfeedfacf || b.readUInt32LE(4)!==0x0100000c || b.readUInt32LE(12)!==1 || !b.includes(Buffer.from("token"))) process.exit(1);'
+node -e 'const fs=require("fs"); const b=fs.readFileSync(".zero/native-test/direct-byte-view-reloc-darwin.o"); const section=32+72; const reloff=b.readUInt32LE(section+56); const nreloc=b.readUInt32LE(section+60); const types=[]; for (let i=0;i<nreloc;i++) types.push((b.readUInt32LE(reloff+i*8+4)>>>28)&15); if (b.readUInt32LE(0)!==0xfeedfacf || b.readUInt32LE(4)!==0x0100000c || b.readUInt32LE(12)!==1 || !b.includes(Buffer.from("token")) || reloff===0 || !types.includes(3) || !types.includes(4) || types.includes(0)) process.exit(1);'
 test ! -f .zero/native-test/direct-byte-view-reloc-darwin.o.c
 grep -q '"dataSections":true' .zero/native-test/direct-byte-view-reloc-darwin.json
 grep -q '"readonlyDataBytes":6' .zero/native-test/direct-byte-view-reloc-darwin.json
@@ -1764,6 +1878,28 @@ SOURCE
   cc .zero/native-test/direct-std-args-darwin-link.o .zero/native-test/direct-std-args-darwin-runtime.c -o .zero/native-test/direct-std-args-darwin-linked
   direct_std_args_darwin_output="$(.zero/native-test/direct-std-args-darwin-linked agent-arg extra)"
   test "$direct_std_args_darwin_output" = "agent-arg"
+  rm -f .zero/native-test/std-http-response-helpers .zero/native-test/std-http-response-helpers.json .zero/native-test/std-http-response-helpers.zero.o .zero/native-test/std-http-response-helpers.zero-runtime.o
+  bin/zero build --json --emit exe --target darwin-arm64 conformance/native/pass/std-http-response-helpers.0 --out .zero/native-test/std-http-response-helpers > .zero/native-test/std-http-response-helpers.json
+  set +e
+  .zero/native-test/std-http-response-helpers
+  std_http_response_helpers_status=$?
+  set -e
+  test "$std_http_response_helpers_status" = "29"
+  test ! -f .zero/native-test/std-http-response-helpers.zero.o
+  test ! -f .zero/native-test/std-http-response-helpers.zero-runtime.o
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(".zero/native-test/std-http-response-helpers.json","utf8")); if (report.generatedCBytes!==0 || report.objectBackend.linking.targetLibraries!=="zero-runtime" || report.objectBackend.linking.externalToolchain!=="cc" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o") || report.objectBackend.directFacts.runtimeHelperCount!==1) process.exit(1);'
+  rm -f .zero/native-test/std-http-fetch .zero/native-test/std-http-fetch.json .zero/native-test/std-http-fetch.zero.o .zero/native-test/std-http-fetch.zero-runtime.o .zero/native-test/std-http-fetch.zero-http-curl.o
+  bin/zero build --json --emit exe --target darwin-arm64 conformance/native/pass/std-http-fetch.0 --out .zero/native-test/std-http-fetch > .zero/native-test/std-http-fetch.json
+  set +e
+  .zero/native-test/std-http-fetch
+  std_http_fetch_status=$?
+  set -e
+  test "$std_http_fetch_status" = "23"
+  test ! -f .zero/native-test/std-http-fetch.zero.o
+  test ! -f .zero/native-test/std-http-fetch.zero-runtime.o
+  test ! -f .zero/native-test/std-http-fetch.zero-http-curl.o
+  node -e 'const fs=require("fs"); const report=JSON.parse(fs.readFileSync(".zero/native-test/std-http-fetch.json","utf8")); if (report.generatedCBytes!==0 || report.objectBackend.linking.targetLibraries!=="zero-runtime,curl" || report.objectBackend.linking.externalToolchain!=="cc" || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_runtime.o") || !report.objectBackend.linkerPlan.staticLibraries.includes("zero_http_curl.o") || !report.objectBackend.linkerPlan.systemLibraries.includes("curl") || report.objectBackend.directFacts.runtimeHelperCount!==2 || !(report.objectBackend.directFacts.runtime.readonlyDataBytes > 0)) process.exit(1);'
+  node scripts/http-runtime-smoke.mjs
 fi
 rm -f .zero/native-test/direct-call-add-win.obj .zero/native-test/direct-call-add-win.obj.c
 bin/zero build --json --emit obj --target win32-x64.exe examples/direct-call-add.0 --out .zero/native-test/direct-call-add-win.obj > .zero/native-test/direct-call-add-win.json

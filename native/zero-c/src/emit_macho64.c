@@ -299,6 +299,18 @@ typedef struct {
 } MachOWorldWritePatch;
 
 typedef struct {
+  size_t patch_offset;
+} MachORuntimeJsonParseBytesPatch;
+
+typedef struct {
+  size_t patch_offset;
+} MachORuntimeHttpFetchPatch;
+
+typedef struct {
+  size_t patch_offset;
+} MachORuntimeHttpResultPatch;
+
+typedef struct {
   const IrProgram *program;
   size_t *function_offsets;
   size_t function_count;
@@ -311,6 +323,45 @@ typedef struct {
   MachOWorldWritePatch *world_write_patches;
   size_t world_write_patch_len;
   size_t world_write_patch_cap;
+  MachORuntimeJsonParseBytesPatch *runtime_json_parse_bytes_patches;
+  size_t runtime_json_parse_bytes_patch_len;
+  size_t runtime_json_parse_bytes_patch_cap;
+  MachORuntimeHttpFetchPatch *runtime_http_fetch_patches;
+  size_t runtime_http_fetch_patch_len;
+  size_t runtime_http_fetch_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_result_ok_patches;
+  size_t runtime_http_result_ok_patch_len;
+  size_t runtime_http_result_ok_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_result_status_patches;
+  size_t runtime_http_result_status_patch_len;
+  size_t runtime_http_result_status_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_result_body_len_patches;
+  size_t runtime_http_result_body_len_patch_len;
+  size_t runtime_http_result_body_len_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_result_error_patches;
+  size_t runtime_http_result_error_patch_len;
+  size_t runtime_http_result_error_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_response_len_patches;
+  size_t runtime_http_response_len_patch_len;
+  size_t runtime_http_response_len_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_response_headers_len_patches;
+  size_t runtime_http_response_headers_len_patch_len;
+  size_t runtime_http_response_headers_len_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_response_body_offset_patches;
+  size_t runtime_http_response_body_offset_patch_len;
+  size_t runtime_http_response_body_offset_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_header_value_patches;
+  size_t runtime_http_header_value_patch_len;
+  size_t runtime_http_header_value_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_header_found_patches;
+  size_t runtime_http_header_found_patch_len;
+  size_t runtime_http_header_found_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_header_offset_patches;
+  size_t runtime_http_header_offset_patch_len;
+  size_t runtime_http_header_offset_patch_cap;
+  MachORuntimeHttpResultPatch *runtime_http_header_len_patches;
+  size_t runtime_http_header_len_patch_len;
+  size_t runtime_http_header_len_patch_cap;
   unsigned rodata_base_offset;
   bool pie_relative_data;
   bool seed_main_process_args;
@@ -336,6 +387,14 @@ static void macho_append_uleb128(ZBuf *buf, uint64_t value) {
 
 static bool macho_type_is_scalar32(IrTypeKind type) {
   return type == IR_TYPE_BOOL || type == IR_TYPE_U8 || type == IR_TYPE_U16 || type == IR_TYPE_I32 || type == IR_TYPE_U32 || type == IR_TYPE_USIZE;
+}
+
+static bool macho_type_is_scalar64(IrTypeKind type) {
+  return type == IR_TYPE_I64 || type == IR_TYPE_U64;
+}
+
+static bool macho_type_is_scalar(IrTypeKind type) {
+  return macho_type_is_scalar32(type) || macho_type_is_scalar64(type);
 }
 
 static unsigned macho_slot_offset(unsigned local_index) {
@@ -382,6 +441,10 @@ static void macho_emit_add_x_imm(ZBuf *text, unsigned dst, unsigned src, unsigne
 
 static void macho_emit_add_w_imm(ZBuf *text, unsigned dst, unsigned src, unsigned imm) {
   append_u32le(text, 0x11000000u | ((imm & 0xfffu) << 10) | ((src & 31u) << 5) | (dst & 31u));
+}
+
+static void macho_emit_sub_w_imm(ZBuf *text, unsigned dst, unsigned src, unsigned imm) {
+  append_u32le(text, 0x51000000u | ((imm & 0xfffu) << 10) | ((src & 31u) << 5) | (dst & 31u));
 }
 
 static unsigned macho_local_slot_offset(const IrFunction *fun, unsigned local_index, unsigned slot_offset, unsigned frame_size) {
@@ -449,6 +512,10 @@ static void macho_emit_binary_w(ZBuf *text, IrBinaryOp op, unsigned dst, unsigne
 
 static void macho_emit_cmp_w(ZBuf *text, unsigned lhs, unsigned rhs) {
   append_u32le(text, 0x6b00001fu | ((rhs & 31u) << 16) | ((lhs & 31u) << 5));
+}
+
+static void macho_emit_cmp_x(ZBuf *text, unsigned lhs, unsigned rhs) {
+  append_u32le(text, 0xeb00001fu | ((rhs & 31u) << 16) | ((lhs & 31u) << 5));
 }
 
 static void macho_emit_ldrb_w(ZBuf *text, unsigned dst, unsigned base) {
@@ -577,6 +644,74 @@ static bool macho_record_world_write_patch(MachOEmitContext *ctx, size_t patch_o
   return true;
 }
 
+static bool macho_record_runtime_json_parse_bytes_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  if (!ctx) return macho_diag_at(diag, "direct AArch64 Mach-O JSON runtime relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  if (ctx->runtime_json_parse_bytes_patch_len == ctx->runtime_json_parse_bytes_patch_cap) {
+    ctx->runtime_json_parse_bytes_patch_cap = ctx->runtime_json_parse_bytes_patch_cap ? ctx->runtime_json_parse_bytes_patch_cap * 2 : 4;
+    MachORuntimeJsonParseBytesPatch *items = realloc(ctx->runtime_json_parse_bytes_patches, ctx->runtime_json_parse_bytes_patch_cap * sizeof(MachORuntimeJsonParseBytesPatch));
+    if (!items) return macho_diag(diag, "out of memory while recording Mach-O JSON runtime relocation");
+    ctx->runtime_json_parse_bytes_patches = items;
+  }
+  ctx->runtime_json_parse_bytes_patches[ctx->runtime_json_parse_bytes_patch_len++] = (MachORuntimeJsonParseBytesPatch){.patch_offset = patch_offset};
+  return true;
+}
+
+static bool macho_record_runtime_http_fetch_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  if (!ctx) return macho_diag_at(diag, "direct AArch64 Mach-O HTTP runtime relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  if (ctx->runtime_http_fetch_patch_len == ctx->runtime_http_fetch_patch_cap) {
+    ctx->runtime_http_fetch_patch_cap = ctx->runtime_http_fetch_patch_cap ? ctx->runtime_http_fetch_patch_cap * 2 : 4;
+    MachORuntimeHttpFetchPatch *items = realloc(ctx->runtime_http_fetch_patches, ctx->runtime_http_fetch_patch_cap * sizeof(MachORuntimeHttpFetchPatch));
+    if (!items) return macho_diag(diag, "out of memory while recording Mach-O HTTP runtime relocation");
+    ctx->runtime_http_fetch_patches = items;
+  }
+  ctx->runtime_http_fetch_patches[ctx->runtime_http_fetch_patch_len++] = (MachORuntimeHttpFetchPatch){.patch_offset = patch_offset};
+  return true;
+}
+
+static bool macho_record_runtime_http_result_patch(MachORuntimeHttpResultPatch **items, size_t *len, size_t *cap, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  if (!items || !len || !cap) return macho_diag_at(diag, "direct AArch64 Mach-O HTTP result relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  if (*len == *cap) {
+    *cap = *cap ? *cap * 2 : 4;
+    MachORuntimeHttpResultPatch *next = realloc(*items, *cap * sizeof(MachORuntimeHttpResultPatch));
+    if (!next) return macho_diag(diag, "out of memory while recording Mach-O HTTP result relocation");
+    *items = next;
+  }
+  (*items)[(*len)++] = (MachORuntimeHttpResultPatch){.patch_offset = patch_offset};
+  return true;
+}
+
+static bool macho_record_runtime_http_result_ok_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_result_ok_patches, &ctx->runtime_http_result_ok_patch_len, &ctx->runtime_http_result_ok_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_result_status_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_result_status_patches, &ctx->runtime_http_result_status_patch_len, &ctx->runtime_http_result_status_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_result_body_len_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_result_body_len_patches, &ctx->runtime_http_result_body_len_patch_len, &ctx->runtime_http_result_body_len_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_result_error_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_result_error_patches, &ctx->runtime_http_result_error_patch_len, &ctx->runtime_http_result_error_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_header_value_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_header_value_patches, &ctx->runtime_http_header_value_patch_len, &ctx->runtime_http_header_value_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_header_found_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_header_found_patches, &ctx->runtime_http_header_found_patch_len, &ctx->runtime_http_header_found_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_header_offset_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_header_offset_patches, &ctx->runtime_http_header_offset_patch_len, &ctx->runtime_http_header_offset_patch_cap, patch_offset, value, diag);
+}
+
+static bool macho_record_runtime_http_header_len_patch(MachOEmitContext *ctx, size_t patch_offset, const IrValue *value, ZDiag *diag) {
+  return ctx && macho_record_runtime_http_result_patch(&ctx->runtime_http_header_len_patches, &ctx->runtime_http_header_len_patch_len, &ctx->runtime_http_header_len_patch_cap, patch_offset, value, diag);
+}
+
 static void macho_append_call_relocations(ZBuf *relocs, const MachOEmitContext *ctx) {
   for (size_t i = 0; ctx && i < ctx->call_patch_len; i++) {
     const MachOCallPatch *patch = &ctx->call_patches[i];
@@ -603,16 +738,78 @@ static void macho_append_world_write_relocations(ZBuf *relocs, const MachOEmitCo
   }
 }
 
+static void macho_append_runtime_json_parse_bytes_relocations(ZBuf *relocs, const MachOEmitContext *ctx, unsigned symbol_index) {
+  for (size_t i = 0; ctx && i < ctx->runtime_json_parse_bytes_patch_len; i++) {
+    const MachORuntimeJsonParseBytesPatch *patch = &ctx->runtime_json_parse_bytes_patches[i];
+    uint32_t reloc_info = (symbol_index & 0x00ffffffu) |
+                          (1u << 24) |  // r_pcrel
+                          (2u << 25) |  // r_length: 4 bytes
+                          (1u << 27) |  // r_extern: symbol table index
+                          (2u << 28);   // ARM64_RELOC_BRANCH26
+    append_u32le(relocs, (uint32_t)patch->patch_offset);
+    append_u32le(relocs, reloc_info);
+  }
+}
+
+static void macho_append_runtime_http_fetch_relocations(ZBuf *relocs, const MachOEmitContext *ctx, unsigned symbol_index) {
+  for (size_t i = 0; ctx && i < ctx->runtime_http_fetch_patch_len; i++) {
+    const MachORuntimeHttpFetchPatch *patch = &ctx->runtime_http_fetch_patches[i];
+    uint32_t reloc_info = (symbol_index & 0x00ffffffu) |
+                          (1u << 24) |
+                          (2u << 25) |
+                          (1u << 27) |
+                          (2u << 28);
+    append_u32le(relocs, (uint32_t)patch->patch_offset);
+    append_u32le(relocs, reloc_info);
+  }
+}
+
+static void macho_append_runtime_http_result_relocations(ZBuf *relocs, const MachORuntimeHttpResultPatch *patches, size_t patch_len, unsigned symbol_index) {
+  for (size_t i = 0; i < patch_len; i++) {
+    const MachORuntimeHttpResultPatch *patch = &patches[i];
+    uint32_t reloc_info = (symbol_index & 0x00ffffffu) |
+                          (1u << 24) |
+                          (2u << 25) |
+                          (1u << 27) |
+                          (2u << 28);
+    append_u32le(relocs, (uint32_t)patch->patch_offset);
+    append_u32le(relocs, reloc_info);
+  }
+}
+
+static size_t macho_data_relocation_count(const MachOEmitContext *ctx) {
+  if (!ctx) return 0;
+  if (!ctx->pie_relative_data) return ctx->data_patch_len;
+  size_t count = ctx->data_patch_len * 2;
+  for (size_t i = 0; i < ctx->data_patch_len; i++) {
+    const MachODataPatch *patch = &ctx->data_patches[i];
+    if (patch->data_offset != ctx->rodata_base_offset) count += 2;
+  }
+  return count;
+}
+
+static void macho_append_reloc(ZBuf *relocs, uint32_t address, uint32_t symbol_or_addend, bool pcrel, unsigned length, bool external, unsigned type) {
+  uint32_t reloc_info = (symbol_or_addend & 0x00ffffffu) |
+                        ((pcrel ? 1u : 0u) << 24) |
+                        ((length & 3u) << 25) |
+                        ((external ? 1u : 0u) << 27) |
+                        ((type & 15u) << 28);
+  append_u32le(relocs, address);
+  append_u32le(relocs, reloc_info);
+}
+
 static void macho_append_data_relocations(ZBuf *relocs, const MachOEmitContext *ctx, unsigned data_symbol_index) {
   for (size_t i = 0; ctx && i < ctx->data_patch_len; i++) {
     const MachODataPatch *patch = &ctx->data_patches[i];
-    (void)patch;
-    uint32_t reloc_info = (data_symbol_index & 0x00ffffffu) |
-                          (3u << 25) |  // r_length: 8 bytes
-                          (1u << 27) |  // r_extern: symbol table index
-                          (0u << 28);   // ARM64_RELOC_UNSIGNED
-    append_u32le(relocs, (uint32_t)patch->patch_offset);
-    append_u32le(relocs, reloc_info);
+    if (ctx->pie_relative_data) {
+      uint32_t addend = patch->data_offset - ctx->rodata_base_offset;
+      if (addend != 0) macho_append_reloc(relocs, (uint32_t)patch->patch_offset + 4u, addend, false, 2, false, 10); // ARM64_RELOC_ADDEND
+      macho_append_reloc(relocs, (uint32_t)patch->patch_offset + 4u, data_symbol_index, false, 2, true, 4);          // ARM64_RELOC_PAGEOFF12
+      if (addend != 0) macho_append_reloc(relocs, (uint32_t)patch->patch_offset, addend, false, 2, false, 10);      // ARM64_RELOC_ADDEND
+      macho_append_reloc(relocs, (uint32_t)patch->patch_offset, data_symbol_index, true, 2, true, 3);               // ARM64_RELOC_PAGE21
+    } else {
+      macho_append_reloc(relocs, (uint32_t)patch->patch_offset, data_symbol_index, false, 3, true, 0);              // ARM64_RELOC_UNSIGNED
+    }
   }
 }
 
@@ -705,6 +902,13 @@ static bool macho_emit_byte_view_ptr(ZBuf *text, const IrFunction *fun, const Ir
 static bool macho_emit_byte_view_len(ZBuf *text, const IrFunction *fun, const IrValue *view, unsigned reg, unsigned frame_size, MachOEmitContext *ctx, ZDiag *diag);
 static bool macho_emit_value_to_reg(ZBuf *text, const IrFunction *fun, const IrValue *value, unsigned reg, unsigned frame_size, MachOEmitContext *ctx, ZDiag *diag);
 
+static bool macho_emit_json_parse_bytes_call(ZBuf *text, const IrFunction *fun, const IrValue *value, unsigned frame_size, MachOEmitContext *ctx, ZDiag *diag) {
+  if (!macho_emit_byte_view_ptr(text, fun, value->left, 0, frame_size, ctx, diag)) return false;
+  if (!macho_emit_byte_view_len(text, fun, value->left, 1, frame_size, ctx, diag)) return false;
+  size_t patch = macho_emit_bl_placeholder(text);
+  return macho_record_runtime_json_parse_bytes_patch(ctx, patch, value, diag);
+}
+
 static bool macho_emit_byte_view_len(ZBuf *text, const IrFunction *fun, const IrValue *view, unsigned reg, unsigned frame_size, MachOEmitContext *ctx, ZDiag *diag) {
   if (!view) return macho_diag_at(diag, "direct AArch64 Mach-O byte view is missing", 1, 1, "missing byte view");
   if (view->kind == IR_VALUE_STRING_LITERAL || view->kind == IR_VALUE_ARRAY_BYTE_VIEW) {
@@ -723,8 +927,21 @@ static bool macho_emit_byte_view_len(ZBuf *text, const IrFunction *fun, const Ir
   if (view->kind == IR_VALUE_BYTE_SLICE) {
     unsigned start = 0;
     unsigned end = 0;
-    if (macho_const_u32_value(view->index, &start) && macho_const_u32_value(view->right, &end) && end >= start && end - start <= 65535) {
+    if ((!view->index || macho_const_u32_value(view->index, &start)) &&
+        macho_const_u32_value(view->right, &end) && end >= start && end - start <= 65535) {
       macho_emit_movz_w(text, reg, end - start);
+      return true;
+    }
+    if ((!view->index || macho_const_u32_value(view->index, &start)) && view->right) {
+      if (!macho_emit_value_to_reg(text, fun, view->right, reg, frame_size, ctx, diag)) return false;
+      if (start > 0) macho_emit_sub_w_imm(text, reg, reg, start);
+      return true;
+    }
+    if (view->index && view->right) {
+      unsigned tmp = reg == 8 ? 9 : 8;
+      if (!macho_emit_value_to_reg(text, fun, view->right, reg, frame_size, ctx, diag)) return false;
+      if (!macho_emit_value_to_reg(text, fun, view->index, tmp, frame_size, ctx, diag)) return false;
+      macho_emit_binary_w(text, IR_BIN_SUB, reg, reg, tmp);
       return true;
     }
   }
@@ -753,11 +970,16 @@ static bool macho_emit_byte_view_ptr(ZBuf *text, const IrFunction *fun, const Ir
   }
   if (view->kind == IR_VALUE_BYTE_SLICE) {
     unsigned start = 0;
-    if (!macho_const_u32_value(view->index, &start) || start > 4095) {
-      return macho_diag_at(diag, "direct AArch64 Mach-O byte slice currently requires a small constant start", view->line, view->column, "unsupported byte slice");
-    }
     if (!macho_emit_byte_view_ptr(text, fun, view->left, reg, frame_size, ctx, diag)) return false;
-    if (start > 0) macho_emit_add_x_imm(text, reg, reg, start);
+    if (!view->index) return true;
+    if (macho_const_u32_value(view->index, &start)) {
+      if (start > 4095) return macho_diag_at(diag, "direct AArch64 Mach-O byte slice constant start is too large", view->line, view->column, "unsupported byte slice");
+      if (start > 0) macho_emit_add_x_imm(text, reg, reg, start);
+      return true;
+    }
+    unsigned tmp = reg == 8 ? 9 : 8;
+    if (!macho_emit_value_to_reg(text, fun, view->index, tmp, frame_size, ctx, diag)) return false;
+    macho_emit_add_x_reg(text, reg, reg, tmp);
     return true;
   }
   return macho_diag_at(diag, "direct AArch64 Mach-O value is not a supported byte view", view->line, view->column, "unsupported byte view");
@@ -770,7 +992,10 @@ static bool macho_emit_call_to_reg(ZBuf *text, const IrFunction *fun, const IrVa
   }
   size_t patch = macho_emit_bl_placeholder(text);
   if (!macho_record_call_patch(ctx, patch, value->callee_index, value, diag)) return false;
-  if (reg != 0) macho_emit_mov_w(text, reg, 0);
+  if (reg != 0) {
+    if (macho_type_is_scalar64(value->type)) macho_emit_mov_x(text, reg, 0);
+    else macho_emit_mov_w(text, reg, 0);
+  }
   return true;
 }
 
@@ -779,14 +1004,16 @@ static bool macho_emit_value_to_reg(ZBuf *text, const IrFunction *fun, const IrV
   switch (value->kind) {
     case IR_VALUE_BOOL:
     case IR_VALUE_INT:
-      macho_emit_movz_w(text, reg, (uint32_t)value->int_value);
+      if (macho_type_is_scalar64(value->type)) macho_emit_movz_x(text, reg, (uint32_t)value->int_value);
+      else macho_emit_movz_w(text, reg, (uint32_t)value->int_value);
       return true;
     case IR_VALUE_LOCAL:
       if (value->local_index >= fun->local_len) return macho_diag_at(diag, "direct AArch64 Mach-O local index is out of range", value->line, value->column, "invalid local");
       if (fun->locals[value->local_index].type == IR_TYPE_BYTE_VIEW) {
         return macho_diag_at(diag, "direct AArch64 Mach-O byte-view local cannot be used as a scalar", value->line, value->column, "byte-view local");
       }
-      macho_emit_load_local_w(text, fun, reg, value->local_index, 0, frame_size);
+      if (macho_type_is_scalar64(fun->locals[value->local_index].type)) macho_emit_load_local_x(text, fun, reg, value->local_index, 0, frame_size);
+      else macho_emit_load_local_w(text, fun, reg, value->local_index, 0, frame_size);
       return true;
     case IR_VALUE_BINARY:
       if (value->binary_op == IR_BIN_AND) {
@@ -838,6 +1065,97 @@ static bool macho_emit_value_to_reg(ZBuf *text, const IrFunction *fun, const IrV
     }
     case IR_VALUE_CALL:
       return macho_emit_call_to_reg(text, fun, value, reg, frame_size, ctx, diag);
+    case IR_VALUE_JSON_PARSE_BYTES:
+      if (!macho_emit_json_parse_bytes_call(text, fun, value, frame_size, ctx, diag)) return false;
+      if (reg != 0) macho_emit_mov_x(text, reg, 0);
+      return true;
+    case IR_VALUE_JSON_VALIDATE_BYTES:
+      if (!macho_emit_json_parse_bytes_call(text, fun, value, frame_size, ctx, diag)) return false;
+      macho_emit_cmp_x(text, 0, 31);
+      macho_emit_movz_w(text, reg, 0);
+      {
+        size_t invalid = macho_emit_b_cond_placeholder(text, 11); // signed less than
+        macho_emit_movz_w(text, reg, 1);
+        macho_patch_cond19(text, invalid, text->len);
+      }
+      return true;
+    case IR_VALUE_JSON_STREAM_TOKENS_BYTES:
+      if (!macho_emit_json_parse_bytes_call(text, fun, value, frame_size, ctx, diag)) return false;
+      macho_emit_cmp_x(text, 0, 31);
+      {
+        size_t ok = macho_emit_b_cond_placeholder(text, 10); // signed greater or equal
+        if (reg != 0) macho_emit_mov_x(text, reg, 31);
+        else macho_emit_mov_x(text, 0, 31);
+        size_t done = macho_emit_b_placeholder(text);
+        macho_patch_cond19(text, ok, text->len);
+        if (reg != 0) macho_emit_mov_x(text, reg, 0);
+        macho_patch_branch26(text, done, text->len);
+      }
+      return true;
+    case IR_VALUE_HTTP_FETCH: {
+      if (!macho_emit_byte_view_ptr(text, fun, value->left, 0, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_len(text, fun, value->left, 1, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_ptr(text, fun, value->right, 2, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_len(text, fun, value->right, 3, frame_size, ctx, diag)) return false;
+      if (!macho_emit_value_to_reg(text, fun, value->index, 4, frame_size, ctx, diag)) return false;
+      size_t patch = macho_emit_bl_placeholder(text);
+      if (!macho_record_runtime_http_fetch_patch(ctx, patch, value, diag)) return false;
+      if (reg != 0) macho_emit_mov_x(text, reg, 0);
+      return true;
+    }
+    case IR_VALUE_HTTP_RESULT_OK:
+    case IR_VALUE_HTTP_RESULT_STATUS:
+    case IR_VALUE_HTTP_RESULT_BODY_LEN:
+    case IR_VALUE_HTTP_RESULT_ERROR:
+    case IR_VALUE_HTTP_HEADER_FOUND:
+    case IR_VALUE_HTTP_HEADER_OFFSET:
+    case IR_VALUE_HTTP_HEADER_LEN: {
+      if (!macho_emit_value_to_reg(text, fun, value->left, 0, frame_size, ctx, diag)) return false;
+      size_t patch = macho_emit_bl_placeholder(text);
+      if (value->kind == IR_VALUE_HTTP_RESULT_OK) {
+        if (!macho_record_runtime_http_result_ok_patch(ctx, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_RESULT_STATUS) {
+        if (!macho_record_runtime_http_result_status_patch(ctx, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_RESULT_BODY_LEN) {
+        if (!macho_record_runtime_http_result_body_len_patch(ctx, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_RESULT_ERROR) {
+        if (!macho_record_runtime_http_result_error_patch(ctx, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_HEADER_FOUND) {
+        if (!macho_record_runtime_http_header_found_patch(ctx, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_HEADER_OFFSET) {
+        if (!macho_record_runtime_http_header_offset_patch(ctx, patch, value, diag)) return false;
+      } else if (!macho_record_runtime_http_header_len_patch(ctx, patch, value, diag)) {
+        return false;
+      }
+      if (reg != 0) macho_emit_mov_w(text, reg, 0);
+      return true;
+    }
+    case IR_VALUE_HTTP_RESPONSE_LEN:
+    case IR_VALUE_HTTP_RESPONSE_HEADERS_LEN:
+    case IR_VALUE_HTTP_RESPONSE_BODY_OFFSET: {
+      if (!macho_emit_byte_view_ptr(text, fun, value->left, 0, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_len(text, fun, value->left, 1, frame_size, ctx, diag)) return false;
+      size_t patch = macho_emit_bl_placeholder(text);
+      if (value->kind == IR_VALUE_HTTP_RESPONSE_LEN) {
+        if (!macho_record_runtime_http_result_patch(&ctx->runtime_http_response_len_patches, &ctx->runtime_http_response_len_patch_len, &ctx->runtime_http_response_len_patch_cap, patch, value, diag)) return false;
+      } else if (value->kind == IR_VALUE_HTTP_RESPONSE_HEADERS_LEN) {
+        if (!macho_record_runtime_http_result_patch(&ctx->runtime_http_response_headers_len_patches, &ctx->runtime_http_response_headers_len_patch_len, &ctx->runtime_http_response_headers_len_patch_cap, patch, value, diag)) return false;
+      } else if (!macho_record_runtime_http_result_patch(&ctx->runtime_http_response_body_offset_patches, &ctx->runtime_http_response_body_offset_patch_len, &ctx->runtime_http_response_body_offset_patch_cap, patch, value, diag)) {
+        return false;
+      }
+      if (reg != 0) macho_emit_mov_w(text, reg, 0);
+      return true;
+    }
+    case IR_VALUE_HTTP_HEADER_VALUE: {
+      if (!macho_emit_byte_view_ptr(text, fun, value->left, 0, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_len(text, fun, value->left, 1, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_ptr(text, fun, value->right, 2, frame_size, ctx, diag)) return false;
+      if (!macho_emit_byte_view_len(text, fun, value->right, 3, frame_size, ctx, diag)) return false;
+      size_t patch = macho_emit_bl_placeholder(text);
+      if (!macho_record_runtime_http_header_value_patch(ctx, patch, value, diag)) return false;
+      if (reg != 0) macho_emit_mov_x(text, reg, 0);
+      return true;
+    }
     case IR_VALUE_VEC_LEN:
     case IR_VALUE_VEC_CAPACITY:
       if (value->local_index >= fun->local_len || fun->locals[value->local_index].type != IR_TYPE_VEC) return macho_diag_at(diag, "direct AArch64 Mach-O Vec helper requires a Vec local", value->line, value->column, "invalid Vec local");
@@ -877,7 +1195,10 @@ static bool macho_emit_value_to_reg(ZBuf *text, const IrFunction *fun, const IrV
       macho_emit_movz_w(text, reg, 1);
       return true;
     case IR_VALUE_MAYBE_HAS:
-      if (value->local_index >= fun->local_len || fun->locals[value->local_index].type != IR_TYPE_MAYBE_BYTE_VIEW) return macho_diag_at(diag, "direct AArch64 Mach-O maybe helper requires a Maybe<MutSpan<u8>> local", value->line, value->column, "invalid maybe local");
+      if (value->local_index >= fun->local_len ||
+          (fun->locals[value->local_index].type != IR_TYPE_MAYBE_BYTE_VIEW && fun->locals[value->local_index].type != IR_TYPE_MAYBE_SCALAR)) {
+        return macho_diag_at(diag, "direct AArch64 Mach-O maybe helper requires a Maybe local", value->line, value->column, "invalid maybe local");
+      }
       macho_emit_load_local_w(text, fun, reg, value->local_index, 0, frame_size);
       return true;
     case IR_VALUE_BYTE_VIEW_LEN:
@@ -1065,8 +1386,58 @@ static bool macho_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *i
       macho_patch_branch26(text, end_patch, text->len);
       return true;
     }
+    if (fun->locals[instr->local_index].type == IR_TYPE_MAYBE_SCALAR) {
+      if (!instr->value) return macho_diag_at(diag, "direct AArch64 Mach-O Maybe scalar initializer is missing", instr->line, instr->column, "missing maybe value");
+      if (instr->value->kind == IR_VALUE_MAYBE_SCALAR_LITERAL) {
+        macho_emit_movz_w(text, 8, instr->value->data_len ? 1u : 0u);
+        macho_emit_store_local_w(text, fun, 8, instr->local_index, 0, frame_size);
+        macho_emit_movz_x(text, 8, (uint32_t)instr->value->int_value);
+        macho_emit_store_local_x(text, fun, 8, instr->local_index, 8, frame_size);
+        return true;
+      }
+      if (instr->value->kind == IR_VALUE_JSON_PARSE_BYTES) {
+        if (instr->value->local_index >= fun->local_len || fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return macho_diag_at(diag, "direct AArch64 Mach-O JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        if (!macho_emit_value_to_reg(text, fun, instr->value, 8, frame_size, ctx, diag)) return false;
+        macho_emit_cmp_x(text, 8, 31);
+        size_t fail = macho_emit_b_cond_placeholder(text, 11); // signed less than
+        macho_emit_load_local_w(text, fun, 9, instr->value->local_index, 12, frame_size);
+        macho_emit_mov_w(text, 10, 8);
+        macho_emit_binary_w(text, IR_BIN_ADD, 11, 9, 10);
+        macho_emit_load_local_w(text, fun, 12, instr->value->local_index, 8, frame_size);
+        macho_emit_cmp_w(text, 11, 12);
+        size_t overflow = macho_emit_b_cond_placeholder(text, 8); // unsigned higher
+        macho_emit_movz_w(text, 9, 1);
+        macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+        macho_emit_store_local_x(text, fun, 8, instr->local_index, 8, frame_size);
+        macho_emit_store_local_w(text, fun, 11, instr->value->local_index, 12, frame_size);
+        size_t end = macho_emit_b_placeholder(text);
+        macho_patch_cond19(text, fail, text->len);
+        macho_patch_cond19(text, overflow, text->len);
+        macho_emit_movz_w(text, 9, 0);
+        macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+        macho_emit_store_local_x(text, fun, 9, instr->local_index, 8, frame_size);
+        macho_patch_branch26(text, end, text->len);
+        return true;
+      }
+      if (!macho_emit_value_to_reg(text, fun, instr->value, 8, frame_size, ctx, diag)) return false;
+      macho_emit_cmp_x(text, 8, 31);
+      size_t fail = macho_emit_b_cond_placeholder(text, 11); // signed less than
+      macho_emit_movz_w(text, 9, 1);
+      macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+      macho_emit_store_local_x(text, fun, 8, instr->local_index, 8, frame_size);
+      size_t end = macho_emit_b_placeholder(text);
+      macho_patch_cond19(text, fail, text->len);
+      macho_emit_movz_w(text, 9, 0);
+      macho_emit_store_local_w(text, fun, 9, instr->local_index, 0, frame_size);
+      macho_emit_store_local_x(text, fun, 9, instr->local_index, 8, frame_size);
+      macho_patch_branch26(text, end, text->len);
+      return true;
+    }
     if (!macho_emit_value_to_reg(text, fun, instr->value, 8, frame_size, ctx, diag)) return false;
-    macho_emit_store_local_w(text, fun, 8, instr->local_index, 0, frame_size);
+    if (macho_type_is_scalar64(fun->locals[instr->local_index].type)) macho_emit_store_local_x(text, fun, 8, instr->local_index, 0, frame_size);
+    else macho_emit_store_local_w(text, fun, 8, instr->local_index, 0, frame_size);
     return true;
   }
   if (instr->kind == IR_INSTR_FIELD_STORE) {
@@ -1159,8 +1530,8 @@ static bool macho_validate_function(const IrFunction *fun, ZDiag *diag) {
   uint32_t ignored = 0;
   if (macho_is_literal_return_function(fun, &ignored, NULL)) return true;
   if (fun->param_count > 8) return macho_diag_at(diag, "direct AArch64 Mach-O object backend supports at most eight parameters", fun->line, fun->column, fun->name);
-  if (fun->return_type != IR_TYPE_VOID && !macho_type_is_scalar32(fun->return_type)) {
-    return macho_diag_at(diag, "direct AArch64 Mach-O object backend currently supports only Void and 32-bit-or-smaller integer returns", fun->line, fun->column, fun->name);
+  if (fun->return_type != IR_TYPE_VOID && !macho_type_is_scalar(fun->return_type)) {
+    return macho_diag_at(diag, "direct AArch64 Mach-O object backend currently supports only Void and primitive integer returns", fun->line, fun->column, fun->name);
   }
   for (size_t i = 0; i < fun->local_len; i++) {
     if (fun->locals[i].type == IR_TYPE_BYTE_VIEW) {
@@ -1171,9 +1542,9 @@ static bool macho_validate_function(const IrFunction *fun, ZDiag *diag) {
     }
     if (fun->locals[i].is_array && (fun->locals[i].element_type == IR_TYPE_U8 || fun->locals[i].element_type == IR_TYPE_U32 || fun->locals[i].element_type == IR_TYPE_I32 || fun->locals[i].element_type == IR_TYPE_USIZE)) continue;
     if (fun->locals[i].is_record) continue;
-    if (fun->locals[i].type == IR_TYPE_ALLOC || fun->locals[i].type == IR_TYPE_MAYBE_BYTE_VIEW) continue;
+    if (fun->locals[i].type == IR_TYPE_ALLOC || fun->locals[i].type == IR_TYPE_MAYBE_BYTE_VIEW || fun->locals[i].type == IR_TYPE_MAYBE_SCALAR) continue;
     if (fun->locals[i].type == IR_TYPE_VEC) continue;
-    if (fun->locals[i].is_array || !macho_type_is_scalar32(fun->locals[i].type)) {
+    if (fun->locals[i].is_array || !macho_type_is_scalar(fun->locals[i].type)) {
       return macho_diag_at(diag, "direct AArch64 Mach-O object backend currently supports only primitive scalar locals", fun->locals[i].line, fun->locals[i].column, fun->locals[i].name);
     }
   }
@@ -1198,7 +1569,8 @@ static bool macho_emit_function_text(ZBuf *text, const IrFunction *fun, MachOEmi
     macho_emit_mov_x(text, 21, 1);
   }
   for (size_t i = 0; i < fun->param_count; i++) {
-    macho_emit_store_local_w(text, fun, (unsigned)i, (unsigned)i, 0, frame_size);
+    if (macho_type_is_scalar64(fun->locals[i].type)) macho_emit_store_local_x(text, fun, (unsigned)i, (unsigned)i, 0, frame_size);
+    else macho_emit_store_local_w(text, fun, (unsigned)i, (unsigned)i, 0, frame_size);
   }
   if (!macho_emit_instrs(text, fun, fun->instrs, fun->instr_len, frame_size, seed_process_args, ctx, diag)) return false;
   if (fun->instr_len == 0 || fun->instrs[fun->instr_len - 1].kind != IR_INSTR_RETURN) macho_emit_epilogue(text, frame_size, seed_process_args);
@@ -1269,6 +1641,7 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
     .function_offsets = offsets,
     .function_count = program->function_len,
     .rodata_base_offset = rodata_base_offset,
+    .pie_relative_data = true,
     .seed_main_process_args = true
   };
   for (size_t i = 0; i < program->function_len; i++) {
@@ -1279,6 +1652,19 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
       zbuf_free(&strings);
       free(string_offsets);
       free(offsets);
+      free(ctx.runtime_json_parse_bytes_patches);
+      free(ctx.runtime_http_fetch_patches);
+      free(ctx.runtime_http_result_ok_patches);
+      free(ctx.runtime_http_result_status_patches);
+      free(ctx.runtime_http_result_body_len_patches);
+      free(ctx.runtime_http_result_error_patches);
+      free(ctx.runtime_http_response_len_patches);
+      free(ctx.runtime_http_response_headers_len_patches);
+      free(ctx.runtime_http_response_body_offset_patches);
+      free(ctx.runtime_http_header_value_patches);
+      free(ctx.runtime_http_header_found_patches);
+      free(ctx.runtime_http_header_offset_patches);
+      free(ctx.runtime_http_header_len_patches);
       free(ctx.world_write_patches);
       free(ctx.data_patches);
       free(ctx.call_patches);
@@ -1297,9 +1683,89 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
     macho_append_data_relocations(&relocs, &ctx, (unsigned)program->function_len);
   }
   const bool has_world_write = ctx.world_write_patch_len > 0;
-  const uint32_t world_write_symbol_index = (uint32_t)program->function_len + (has_rodata ? 1u : 0u);
+  const bool has_runtime_json_parse_bytes = ctx.runtime_json_parse_bytes_patch_len > 0;
+  const bool has_runtime_http_fetch = ctx.runtime_http_fetch_patch_len > 0;
+  const bool has_runtime_http_result_ok = ctx.runtime_http_result_ok_patch_len > 0;
+  const bool has_runtime_http_result_status = ctx.runtime_http_result_status_patch_len > 0;
+  const bool has_runtime_http_result_body_len = ctx.runtime_http_result_body_len_patch_len > 0;
+  const bool has_runtime_http_result_error = ctx.runtime_http_result_error_patch_len > 0;
+  const bool has_runtime_http_response_len = ctx.runtime_http_response_len_patch_len > 0;
+  const bool has_runtime_http_response_headers_len = ctx.runtime_http_response_headers_len_patch_len > 0;
+  const bool has_runtime_http_response_body_offset = ctx.runtime_http_response_body_offset_patch_len > 0;
+  const bool has_runtime_http_header_value = ctx.runtime_http_header_value_patch_len > 0;
+  const bool has_runtime_http_header_found = ctx.runtime_http_header_found_patch_len > 0;
+  const bool has_runtime_http_header_offset = ctx.runtime_http_header_offset_patch_len > 0;
+  const bool has_runtime_http_header_len = ctx.runtime_http_header_len_patch_len > 0;
+  uint32_t next_runtime_symbol = (uint32_t)program->function_len + (has_rodata ? 1u : 0u);
+  uint32_t world_write_symbol_index = 0;
+  uint32_t runtime_json_parse_bytes_symbol_index = 0;
+  uint32_t runtime_http_fetch_symbol_index = 0;
+  uint32_t runtime_http_result_ok_symbol_index = 0;
+  uint32_t runtime_http_result_status_symbol_index = 0;
+  uint32_t runtime_http_result_body_len_symbol_index = 0;
+  uint32_t runtime_http_result_error_symbol_index = 0;
+  uint32_t runtime_http_response_len_symbol_index = 0;
+  uint32_t runtime_http_response_headers_len_symbol_index = 0;
+  uint32_t runtime_http_response_body_offset_symbol_index = 0;
+  uint32_t runtime_http_header_value_symbol_index = 0;
+  uint32_t runtime_http_header_found_symbol_index = 0;
+  uint32_t runtime_http_header_offset_symbol_index = 0;
+  uint32_t runtime_http_header_len_symbol_index = 0;
+  if (has_world_write) world_write_symbol_index = next_runtime_symbol++;
+  if (has_runtime_json_parse_bytes) runtime_json_parse_bytes_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_fetch) runtime_http_fetch_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_result_ok) runtime_http_result_ok_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_result_status) runtime_http_result_status_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_result_body_len) runtime_http_result_body_len_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_result_error) runtime_http_result_error_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_response_len) runtime_http_response_len_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_response_headers_len) runtime_http_response_headers_len_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_response_body_offset) runtime_http_response_body_offset_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_header_value) runtime_http_header_value_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_header_found) runtime_http_header_found_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_header_offset) runtime_http_header_offset_symbol_index = next_runtime_symbol++;
+  if (has_runtime_http_header_len) runtime_http_header_len_symbol_index = next_runtime_symbol++;
   if (has_world_write) {
     macho_append_world_write_relocations(&relocs, &ctx, world_write_symbol_index);
+  }
+  if (has_runtime_json_parse_bytes) {
+    macho_append_runtime_json_parse_bytes_relocations(&relocs, &ctx, runtime_json_parse_bytes_symbol_index);
+  }
+  if (has_runtime_http_fetch) {
+    macho_append_runtime_http_fetch_relocations(&relocs, &ctx, runtime_http_fetch_symbol_index);
+  }
+  if (has_runtime_http_result_ok) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_result_ok_patches, ctx.runtime_http_result_ok_patch_len, runtime_http_result_ok_symbol_index);
+  }
+  if (has_runtime_http_result_status) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_result_status_patches, ctx.runtime_http_result_status_patch_len, runtime_http_result_status_symbol_index);
+  }
+  if (has_runtime_http_result_body_len) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_result_body_len_patches, ctx.runtime_http_result_body_len_patch_len, runtime_http_result_body_len_symbol_index);
+  }
+  if (has_runtime_http_result_error) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_result_error_patches, ctx.runtime_http_result_error_patch_len, runtime_http_result_error_symbol_index);
+  }
+  if (has_runtime_http_response_len) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_response_len_patches, ctx.runtime_http_response_len_patch_len, runtime_http_response_len_symbol_index);
+  }
+  if (has_runtime_http_response_headers_len) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_response_headers_len_patches, ctx.runtime_http_response_headers_len_patch_len, runtime_http_response_headers_len_symbol_index);
+  }
+  if (has_runtime_http_response_body_offset) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_response_body_offset_patches, ctx.runtime_http_response_body_offset_patch_len, runtime_http_response_body_offset_symbol_index);
+  }
+  if (has_runtime_http_header_value) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_header_value_patches, ctx.runtime_http_header_value_patch_len, runtime_http_header_value_symbol_index);
+  }
+  if (has_runtime_http_header_found) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_header_found_patches, ctx.runtime_http_header_found_patch_len, runtime_http_header_found_symbol_index);
+  }
+  if (has_runtime_http_header_offset) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_header_offset_patches, ctx.runtime_http_header_offset_patch_len, runtime_http_header_offset_symbol_index);
+  }
+  if (has_runtime_http_header_len) {
+    macho_append_runtime_http_result_relocations(&relocs, ctx.runtime_http_header_len_patches, ctx.runtime_http_header_len_patch_len, runtime_http_header_len_symbol_index);
   }
 
   const uint32_t header_size = 32;
@@ -1312,7 +1778,7 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
   const uint32_t segment_file_size = has_rodata ? const_addr + (uint32_t)rodata.len : (uint32_t)text.len;
   const uint32_t reloff = relocs.len > 0 ? text_offset + segment_file_size : 0;
   const uint32_t symoff = text_offset + segment_file_size + (uint32_t)relocs.len;
-  const uint32_t nsyms = (uint32_t)program->function_len + (has_rodata ? 1u : 0u) + (has_world_write ? 1u : 0u);
+  const uint32_t nsyms = (uint32_t)program->function_len + (has_rodata ? 1u : 0u) + (has_world_write ? 1u : 0u) + (has_runtime_json_parse_bytes ? 1u : 0u) + (has_runtime_http_fetch ? 1u : 0u) + (has_runtime_http_result_ok ? 1u : 0u) + (has_runtime_http_result_status ? 1u : 0u) + (has_runtime_http_result_body_len ? 1u : 0u) + (has_runtime_http_result_error ? 1u : 0u) + (has_runtime_http_response_len ? 1u : 0u) + (has_runtime_http_response_headers_len ? 1u : 0u) + (has_runtime_http_response_body_offset ? 1u : 0u) + (has_runtime_http_header_value ? 1u : 0u) + (has_runtime_http_header_found ? 1u : 0u) + (has_runtime_http_header_offset ? 1u : 0u) + (has_runtime_http_header_len ? 1u : 0u);
   const uint32_t stroff = symoff + nsyms * 16;
   uint32_t rodata_string_offset = 0;
   if (has_rodata) {
@@ -1324,6 +1790,84 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
   if (has_world_write) {
     world_write_string_offset = (uint32_t)strings.len;
     zbuf_append(&strings, "_zero_world_write");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_json_parse_bytes_string_offset = 0;
+  if (has_runtime_json_parse_bytes) {
+    runtime_json_parse_bytes_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_json_parse_bytes");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_fetch_string_offset = 0;
+  if (has_runtime_http_fetch) {
+    runtime_http_fetch_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_fetch_result");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_result_ok_string_offset = 0;
+  if (has_runtime_http_result_ok) {
+    runtime_http_result_ok_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_result_ok");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_result_status_string_offset = 0;
+  if (has_runtime_http_result_status) {
+    runtime_http_result_status_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_result_status");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_result_body_len_string_offset = 0;
+  if (has_runtime_http_result_body_len) {
+    runtime_http_result_body_len_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_result_body_len");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_result_error_string_offset = 0;
+  if (has_runtime_http_result_error) {
+    runtime_http_result_error_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_result_error");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_response_len_string_offset = 0;
+  if (has_runtime_http_response_len) {
+    runtime_http_response_len_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_response_len");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_response_headers_len_string_offset = 0;
+  if (has_runtime_http_response_headers_len) {
+    runtime_http_response_headers_len_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_response_headers_len");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_response_body_offset_string_offset = 0;
+  if (has_runtime_http_response_body_offset) {
+    runtime_http_response_body_offset_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_response_body_offset");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_header_value_string_offset = 0;
+  if (has_runtime_http_header_value) {
+    runtime_http_header_value_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_header_value");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_header_found_string_offset = 0;
+  if (has_runtime_http_header_found) {
+    runtime_http_header_found_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_header_found");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_header_offset_string_offset = 0;
+  if (has_runtime_http_header_offset) {
+    runtime_http_header_offset_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_header_offset");
+    append_u8(&strings, 0);
+  }
+  uint32_t runtime_http_header_len_string_offset = 0;
+  if (has_runtime_http_header_len) {
+    runtime_http_header_len_string_offset = (uint32_t)strings.len;
+    zbuf_append(&strings, "_zero_http_header_len");
     append_u8(&strings, 0);
   }
 
@@ -1355,7 +1899,7 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
   append_u32le(out, text_offset);
   append_u32le(out, 2);
   append_u32le(out, reloff);
-  append_u32le(out, (uint32_t)(ctx.call_patch_len + ctx.data_patch_len + ctx.world_write_patch_len));
+  append_u32le(out, (uint32_t)(ctx.call_patch_len + macho_data_relocation_count(&ctx) + ctx.world_write_patch_len + ctx.runtime_json_parse_bytes_patch_len + ctx.runtime_http_fetch_patch_len + ctx.runtime_http_result_ok_patch_len + ctx.runtime_http_result_status_patch_len + ctx.runtime_http_result_body_len_patch_len + ctx.runtime_http_result_error_patch_len + ctx.runtime_http_response_len_patch_len + ctx.runtime_http_response_headers_len_patch_len + ctx.runtime_http_response_body_offset_patch_len + ctx.runtime_http_header_value_patch_len + ctx.runtime_http_header_found_patch_len + ctx.runtime_http_header_offset_patch_len + ctx.runtime_http_header_len_patch_len));
   append_u32le(out, 0x80000400u);
   append_u32le(out, 0);
   append_u32le(out, 0);
@@ -1410,8 +1954,112 @@ bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *d
     append_u16le(out, 0);
     append_u64le(out, 0);
   }
+  if (has_runtime_json_parse_bytes) {
+    append_u32le(out, runtime_json_parse_bytes_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_fetch) {
+    append_u32le(out, runtime_http_fetch_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_result_ok) {
+    append_u32le(out, runtime_http_result_ok_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_result_status) {
+    append_u32le(out, runtime_http_result_status_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_result_body_len) {
+    append_u32le(out, runtime_http_result_body_len_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_result_error) {
+    append_u32le(out, runtime_http_result_error_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_response_len) {
+    append_u32le(out, runtime_http_response_len_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_response_headers_len) {
+    append_u32le(out, runtime_http_response_headers_len_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_response_body_offset) {
+    append_u32le(out, runtime_http_response_body_offset_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_header_value) {
+    append_u32le(out, runtime_http_header_value_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_header_found) {
+    append_u32le(out, runtime_http_header_found_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_header_offset) {
+    append_u32le(out, runtime_http_header_offset_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
+  if (has_runtime_http_header_len) {
+    append_u32le(out, runtime_http_header_len_string_offset);
+    append_u8(out, 0x01); // N_EXT undefined external
+    append_u8(out, 0);
+    append_u16le(out, 0);
+    append_u64le(out, 0);
+  }
   if (strings.data) append_bytes(out, strings.data, strings.len);
 
+  free(ctx.runtime_json_parse_bytes_patches);
+  free(ctx.runtime_http_fetch_patches);
+  free(ctx.runtime_http_result_ok_patches);
+  free(ctx.runtime_http_result_status_patches);
+  free(ctx.runtime_http_result_body_len_patches);
+  free(ctx.runtime_http_result_error_patches);
+  free(ctx.runtime_http_response_len_patches);
+  free(ctx.runtime_http_response_headers_len_patches);
+  free(ctx.runtime_http_response_body_offset_patches);
+  free(ctx.runtime_http_header_value_patches);
+  free(ctx.runtime_http_header_found_patches);
+  free(ctx.runtime_http_header_offset_patches);
+  free(ctx.runtime_http_header_len_patches);
   free(ctx.world_write_patches);
   free(ctx.data_patches);
   free(ctx.call_patches);
@@ -1506,6 +2154,19 @@ bool z_emit_macho64_exe_from_ir(const IrProgram *program, ZBuf *out, ZDiag *diag
     macho_pad_to(&text, macho_align(text.len, 4));
     offsets[i] = text.len;
     if (!macho_emit_function_text(&text, &program->functions[i], &ctx, diag)) {
+      free(ctx.runtime_json_parse_bytes_patches);
+      free(ctx.runtime_http_fetch_patches);
+      free(ctx.runtime_http_result_ok_patches);
+      free(ctx.runtime_http_result_status_patches);
+      free(ctx.runtime_http_result_body_len_patches);
+      free(ctx.runtime_http_result_error_patches);
+      free(ctx.runtime_http_response_len_patches);
+      free(ctx.runtime_http_response_headers_len_patches);
+      free(ctx.runtime_http_response_body_offset_patches);
+      free(ctx.runtime_http_header_value_patches);
+      free(ctx.runtime_http_header_found_patches);
+      free(ctx.runtime_http_header_offset_patches);
+      free(ctx.runtime_http_header_len_patches);
       free(ctx.world_write_patches);
       free(ctx.data_patches);
       free(ctx.call_patches);
@@ -1514,6 +2175,41 @@ bool z_emit_macho64_exe_from_ir(const IrProgram *program, ZBuf *out, ZDiag *diag
       zbuf_free(&text);
       return false;
     }
+  }
+
+  if (ctx.runtime_json_parse_bytes_patch_len > 0 ||
+      ctx.runtime_http_fetch_patch_len > 0 ||
+      ctx.runtime_http_result_ok_patch_len > 0 ||
+      ctx.runtime_http_result_status_patch_len > 0 ||
+      ctx.runtime_http_result_body_len_patch_len > 0 ||
+      ctx.runtime_http_result_error_patch_len > 0 ||
+      ctx.runtime_http_response_len_patch_len > 0 ||
+      ctx.runtime_http_response_headers_len_patch_len > 0 ||
+      ctx.runtime_http_response_body_offset_patch_len > 0 ||
+      ctx.runtime_http_header_value_patch_len > 0 ||
+      ctx.runtime_http_header_found_patch_len > 0 ||
+      ctx.runtime_http_header_offset_patch_len > 0 ||
+      ctx.runtime_http_header_len_patch_len > 0) {
+    free(ctx.runtime_json_parse_bytes_patches);
+    free(ctx.runtime_http_fetch_patches);
+    free(ctx.runtime_http_result_ok_patches);
+    free(ctx.runtime_http_result_status_patches);
+    free(ctx.runtime_http_result_body_len_patches);
+    free(ctx.runtime_http_result_error_patches);
+    free(ctx.runtime_http_response_len_patches);
+    free(ctx.runtime_http_response_headers_len_patches);
+    free(ctx.runtime_http_response_body_offset_patches);
+    free(ctx.runtime_http_header_value_patches);
+    free(ctx.runtime_http_header_found_patches);
+    free(ctx.runtime_http_header_offset_patches);
+    free(ctx.runtime_http_header_len_patches);
+    free(ctx.world_write_patches);
+    free(ctx.data_patches);
+    free(ctx.call_patches);
+    free(offsets);
+    zbuf_free(&rodata);
+    zbuf_free(&text);
+    return macho_diag_at(diag, "direct AArch64 Mach-O executable runtime helpers require object emission and an explicit runtime link step", 1, 1, "use --emit obj and link zero_runtime.c");
   }
 
   size_t world_write_offset = 0;
@@ -1713,6 +2409,19 @@ bool z_emit_macho64_exe_from_ir(const IrProgram *program, ZBuf *out, ZDiag *diag
   if (signature.data) append_bytes(out, signature.data, signature.len);
   zbuf_free(&signature);
 
+  free(ctx.runtime_json_parse_bytes_patches);
+  free(ctx.runtime_http_fetch_patches);
+  free(ctx.runtime_http_result_ok_patches);
+  free(ctx.runtime_http_result_status_patches);
+  free(ctx.runtime_http_result_body_len_patches);
+  free(ctx.runtime_http_result_error_patches);
+  free(ctx.runtime_http_response_len_patches);
+  free(ctx.runtime_http_response_headers_len_patches);
+  free(ctx.runtime_http_response_body_offset_patches);
+  free(ctx.runtime_http_header_value_patches);
+  free(ctx.runtime_http_header_found_patches);
+  free(ctx.runtime_http_header_offset_patches);
+  free(ctx.runtime_http_header_len_patches);
   free(ctx.world_write_patches);
   free(ctx.data_patches);
   free(ctx.call_patches);

@@ -62,7 +62,7 @@ Use `--json` when another tool will read the result. Text output is for people.
 | `zero dev --json` | A watch plan for changed source, manifest, package-lock, and generated-binding inputs. |
 | `zero dev --json --trace` | Adds phase timing, cache hit/miss facts, diagnostics passthrough, and `interfaceFingerprints`. |
 | `zero time --json` | Compiler phase timing plus `interfaceFingerprints` and incremental invalidation facts. |
-| `zero build --json` | Artifact path, size, selected `toolchain`, target triple, linker flavor, and sysroot status. |
+| `zero build --json` | Artifact path, size, selected `toolchain`, target triple, linker flavor, sysroot status, and runtime provider facts when a helper such as hosted HTTP is linked. |
 | `zero size --json` | `profileSemantics`, `profileCatalog`, `profileBudget`, `sizeBreakdown`, `retentionReasons`, and `optimizationHints`. |
 | `zero ship --json` | A release preview with artifact names, hashes, a checksum file, debug-symbol metadata, size report, and SBOM placeholder. |
 | `zero doctor --json` | Host checks plus `targetToolchains`, the per-target readiness matrix. |
@@ -74,6 +74,9 @@ inputs, typed reflection facts, and integer/Bool/enum static values.
 Build and ship JSON include `releaseTargetContract`. It records artifact kind,
 object format, direct linker flavor, target libc mode, sysroot requirements,
 emitter readiness, target capability facts, and the repeat-build hash policy.
+Host builds that retain runtime-backed helpers can also include `objectBackend`
+linking facts such as retained runtime objects, provider libraries, and
+`httpRuntime` TLS/provider metadata.
 `zero ship --json` nests the same contract under
 `releasePreview.targetContract`.
 

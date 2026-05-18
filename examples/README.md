@@ -77,6 +77,10 @@ Build JSON reports `profileSemantics` and `profileBudget`. Size JSON adds `sizeB
 | `parse-cursor.0` | `use std.parse`, scanner predicates | `bin/zero check examples/parse-cursor.0` |
 | `std-path-io.0` | `std.path` fixed-buffer path helpers and `std.io` caller-owned buffers | `bin/zero check examples/std-path-io.0` |
 | `std-data-formats.0` | `std.codec` encoders and basic explicit-allocator `std.json` helpers | `bin/zero check examples/std-data-formats.0` |
+| `std-json-bytes.0` | byte-span JSON validation, parsing, and token streaming | `bin/zero run --out /tmp/zero-json-bytes examples/std-json-bytes.0` |
+| `std-http-json.0` | hosted HTTP request envelope into caller storage, then byte-span JSON parsing | `bin/zero check examples/std-http-json.0` |
+| `std-http-request.0` | hosted HTTP request envelope with custom method, headers, and body | `bin/zero check examples/std-http-request.0` |
+| `std-http-headers.0` | hosted HTTP request envelope, response buffer, and header-value lookup | `bin/zero check examples/std-http-headers.0` |
 | `std-platform.0` | `std.time`, `std.rand`, `std.proc`, and `std.crypto` capability-shaped helpers | `bin/zero check examples/std-platform.0` |
 | `cli-file.0` | `std.args`, `std.env`, byte-span file writes, stderr/stdout | `bin/zero build --emit wasm --target wasm32-wasi examples/cli-file.0 --out .zero/out/cli-file` |
 | `file-copy.0` | `Fs`, `owned<File>`, read/write resource capabilities, automatic close | `bin/zero build --emit wasm --target wasm32-wasi examples/file-copy.0 --out .zero/out/file-copy` |

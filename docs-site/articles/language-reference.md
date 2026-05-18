@@ -354,6 +354,7 @@ positions are checked as `usize`:
 
 ```zero
 let bytes: [4]u8 = [65, 66, 67, 68]
+let scratch: [16]u8 = [0_u8; 16]
 let first: u8 = bytes[0]
 let tail: Span<u8> = bytes[1..4]
 let view: Span<u8> = std.mem.span("ABCD")

@@ -71,6 +71,10 @@ Core examples:
 - `examples/ownership-cleanup.0`: `owned<T>` cleanup, canonical `drop`, and `defer` at lexical scope exit.
 - `examples/std-path-io.0`: fixed-buffer `std.path` helpers and caller-owned `std.io` buffers.
 - `examples/std-data-formats.0`: `std.codec` encoders and basic explicit-allocator `std.json` helpers.
+- `examples/std-json-bytes.0`: byte-span JSON validation, parsing, and token streaming.
+- `examples/std-http-json.0`: hosted HTTP request envelope into caller-owned storage followed by byte-span JSON parsing.
+- `examples/std-http-request.0`: hosted HTTP request envelope with custom method, headers, and request body.
+- `examples/std-http-headers.0`: hosted HTTP request envelope, response buffer, and header-value lookup.
 - `examples/std-platform.0`: `std.time`, `std.rand`, `std.proc`, and `std.crypto` capability-shaped helpers.
 - `examples/cli-file.0`: args, env, file writes, stdout, and stderr.
 - `examples/file-copy.0`: `Fs`, `owned<File>`, read/write resource capabilities, and automatic close.

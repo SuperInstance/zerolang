@@ -252,6 +252,10 @@ typedef struct {
 } ElfRodataPatch;
 
 typedef struct {
+  size_t patch_offset;
+} ElfRuntimePatch;
+
+typedef struct {
   const IrProgram *ir;
   size_t *function_offsets;
   size_t function_count;
@@ -261,7 +265,47 @@ typedef struct {
   ElfRodataPatch *rodata_patches;
   size_t rodata_patch_len;
   size_t rodata_patch_cap;
+  ElfRuntimePatch *runtime_json_parse_bytes_patches;
+  size_t runtime_json_parse_bytes_patch_len;
+  size_t runtime_json_parse_bytes_patch_cap;
+  ElfRuntimePatch *runtime_http_fetch_patches;
+  size_t runtime_http_fetch_patch_len;
+  size_t runtime_http_fetch_patch_cap;
+  ElfRuntimePatch *runtime_http_result_ok_patches;
+  size_t runtime_http_result_ok_patch_len;
+  size_t runtime_http_result_ok_patch_cap;
+  ElfRuntimePatch *runtime_http_result_status_patches;
+  size_t runtime_http_result_status_patch_len;
+  size_t runtime_http_result_status_patch_cap;
+  ElfRuntimePatch *runtime_http_result_body_len_patches;
+  size_t runtime_http_result_body_len_patch_len;
+  size_t runtime_http_result_body_len_patch_cap;
+  ElfRuntimePatch *runtime_http_result_error_patches;
+  size_t runtime_http_result_error_patch_len;
+  size_t runtime_http_result_error_patch_cap;
+  ElfRuntimePatch *runtime_http_response_len_patches;
+  size_t runtime_http_response_len_patch_len;
+  size_t runtime_http_response_len_patch_cap;
+  ElfRuntimePatch *runtime_http_response_headers_len_patches;
+  size_t runtime_http_response_headers_len_patch_len;
+  size_t runtime_http_response_headers_len_patch_cap;
+  ElfRuntimePatch *runtime_http_response_body_offset_patches;
+  size_t runtime_http_response_body_offset_patch_len;
+  size_t runtime_http_response_body_offset_patch_cap;
+  ElfRuntimePatch *runtime_http_header_value_patches;
+  size_t runtime_http_header_value_patch_len;
+  size_t runtime_http_header_value_patch_cap;
+  ElfRuntimePatch *runtime_http_header_found_patches;
+  size_t runtime_http_header_found_patch_len;
+  size_t runtime_http_header_found_patch_cap;
+  ElfRuntimePatch *runtime_http_header_offset_patches;
+  size_t runtime_http_header_offset_patch_len;
+  size_t runtime_http_header_offset_patch_cap;
+  ElfRuntimePatch *runtime_http_header_len_patches;
+  size_t runtime_http_header_len_patch_len;
+  size_t runtime_http_header_len_patch_cap;
   bool emit_rodata_relocations;
+  bool seed_main_process_args;
   unsigned rodata_base_offset;
   uint64_t rodata_addr;
 } ElfEmitContext;
@@ -303,6 +347,83 @@ static bool elf_record_rodata_patch(ElfEmitContext *ctx, size_t patch_offset, un
   return true;
 }
 
+static bool elf_record_runtime_patch(ElfRuntimePatch **items, size_t *len, size_t *cap, size_t patch_offset, ZDiag *diag, const IrValue *value, const char *name) {
+  if (!items || !len || !cap) return elf_diag(diag, "direct ELF64 runtime patch requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  if (*len + 1 > *cap) {
+    *cap = *cap == 0 ? 4 : *cap * 2;
+    ElfRuntimePatch *next = realloc(*items, *cap * sizeof(ElfRuntimePatch));
+    if (!next) return elf_diag(diag, "direct ELF64 runtime call patch allocation failed", value ? value->line : 1, value ? value->column : 1, name);
+    *items = next;
+  }
+  (*items)[(*len)++] = (ElfRuntimePatch){.patch_offset = patch_offset};
+  return true;
+}
+
+static bool elf_record_runtime_json_parse_bytes_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 JSON runtime relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_json_parse_bytes_patches, &ctx->runtime_json_parse_bytes_patch_len, &ctx->runtime_json_parse_bytes_patch_cap, patch_offset, diag, value, "zero_json_parse_bytes");
+}
+
+static bool elf_record_runtime_http_fetch_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP runtime relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_fetch_patches, &ctx->runtime_http_fetch_patch_len, &ctx->runtime_http_fetch_patch_cap, patch_offset, diag, value, "zero_http_fetch_result");
+}
+
+static bool elf_record_runtime_http_result_ok_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP result relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_result_ok_patches, &ctx->runtime_http_result_ok_patch_len, &ctx->runtime_http_result_ok_patch_cap, patch_offset, diag, value, "zero_http_result_ok");
+}
+
+static bool elf_record_runtime_http_result_status_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP result relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_result_status_patches, &ctx->runtime_http_result_status_patch_len, &ctx->runtime_http_result_status_patch_cap, patch_offset, diag, value, "zero_http_result_status");
+}
+
+static bool elf_record_runtime_http_result_body_len_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP result relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_result_body_len_patches, &ctx->runtime_http_result_body_len_patch_len, &ctx->runtime_http_result_body_len_patch_cap, patch_offset, diag, value, "zero_http_result_body_len");
+}
+
+static bool elf_record_runtime_http_result_error_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP result relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_result_error_patches, &ctx->runtime_http_result_error_patch_len, &ctx->runtime_http_result_error_patch_cap, patch_offset, diag, value, "zero_http_result_error");
+}
+
+static bool elf_record_runtime_http_response_len_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP response relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_response_len_patches, &ctx->runtime_http_response_len_patch_len, &ctx->runtime_http_response_len_patch_cap, patch_offset, diag, value, "zero_http_response_len");
+}
+
+static bool elf_record_runtime_http_response_headers_len_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP response relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_response_headers_len_patches, &ctx->runtime_http_response_headers_len_patch_len, &ctx->runtime_http_response_headers_len_patch_cap, patch_offset, diag, value, "zero_http_response_headers_len");
+}
+
+static bool elf_record_runtime_http_response_body_offset_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP response relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_response_body_offset_patches, &ctx->runtime_http_response_body_offset_patch_len, &ctx->runtime_http_response_body_offset_patch_cap, patch_offset, diag, value, "zero_http_response_body_offset");
+}
+
+static bool elf_record_runtime_http_header_value_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP header relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_header_value_patches, &ctx->runtime_http_header_value_patch_len, &ctx->runtime_http_header_value_patch_cap, patch_offset, diag, value, "zero_http_header_value");
+}
+
+static bool elf_record_runtime_http_header_found_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP header relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_header_found_patches, &ctx->runtime_http_header_found_patch_len, &ctx->runtime_http_header_found_patch_cap, patch_offset, diag, value, "zero_http_header_found");
+}
+
+static bool elf_record_runtime_http_header_offset_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP header relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_header_offset_patches, &ctx->runtime_http_header_offset_patch_len, &ctx->runtime_http_header_offset_patch_cap, patch_offset, diag, value, "zero_http_header_offset");
+}
+
+static bool elf_record_runtime_http_header_len_patch(ElfEmitContext *ctx, size_t patch_offset, ZDiag *diag, const IrValue *value) {
+  if (!ctx) return elf_diag(diag, "direct ELF64 HTTP header relocation requires an emit context", value ? value->line : 1, value ? value->column : 1, "missing context");
+  return elf_record_runtime_patch(&ctx->runtime_http_header_len_patches, &ctx->runtime_http_header_len_patch_len, &ctx->runtime_http_header_len_patch_cap, patch_offset, diag, value, "zero_http_header_len");
+}
+
 static void elf_patch_call_patches(ZBuf *code, const ElfEmitContext *ctx) {
   for (size_t i = 0; i < ctx->call_patch_len; i++) {
     const ElfCallPatch *patch = &ctx->call_patches[i];
@@ -320,7 +441,27 @@ static void elf_patch_rodata_patches(ZBuf *code, const ElfEmitContext *ctx) {
   }
 }
 
-static void elf_emit_epilogue(ZBuf *code) {
+static bool elf_function_seeds_process_args(const IrFunction *fun, const ElfEmitContext *ctx) {
+  return ctx && ctx->seed_main_process_args &&
+         fun && fun->is_exported && fun->name && strcmp(fun->name, "main") == 0;
+}
+
+static unsigned elf_base_stack_size(const IrFunction *fun) {
+  return (unsigned)elf_align(fun ? fun->frame_bytes : 0, 16);
+}
+
+static unsigned elf_total_stack_size(const IrFunction *fun, const ElfEmitContext *ctx) {
+  unsigned base = elf_base_stack_size(fun);
+  return base + (elf_function_seeds_process_args(fun, ctx) ? 32u : 0u);
+}
+
+static void elf_emit_epilogue(ZBuf *code, const IrFunction *fun, const ElfEmitContext *ctx) {
+  if (elf_function_seeds_process_args(fun, ctx)) {
+    unsigned base = elf_base_stack_size(fun);
+    elf_emit_rbp_disp_reg(code, 0x8b, 13, base + 8, true);
+    elf_emit_rbp_disp_reg(code, 0x8b, 14, base + 16, true);
+    elf_emit_rbp_disp_reg(code, 0x8b, 15, base + 24, true);
+  }
   elf_append_u8(code, 0xc9);
   elf_append_u8(code, 0xc3);
 }
@@ -328,6 +469,15 @@ static void elf_emit_epilogue(ZBuf *code) {
 static void elf_emit_pop_reg64(ZBuf *code, unsigned reg) {
   if (reg >= 8) elf_append_u8(code, 0x41);
   elf_append_u8(code, 0x58 + (reg & 7));
+}
+
+static void elf_emit_push_reg64(ZBuf *code, unsigned reg) {
+  if (reg >= 8) elf_append_u8(code, 0x41);
+  elf_append_u8(code, 0x50 + (reg & 7));
+}
+
+static void elf_emit_push_rax(ZBuf *code) {
+  elf_append_u8(code, 0x50);
 }
 
 static void elf_emit_store_local_slot_reg(ZBuf *code, const IrLocal *local, unsigned slot_offset, unsigned reg, bool wide);
@@ -551,6 +701,17 @@ static void elf_emit_load_local_slot_reg(ZBuf *code, const IrLocal *local, unsig
 static bool elf_emit_byte_view_len(ZBuf *code, const IrFunction *fun, const IrValue *view, ElfEmitContext *ctx, ZDiag *diag);
 static bool elf_emit_byte_view_ptr(ZBuf *code, const IrFunction *fun, const IrValue *view, ElfEmitContext *ctx, ZDiag *diag);
 
+static bool elf_emit_json_parse_bytes_call(ZBuf *code, const IrFunction *fun, const IrValue *value, ElfEmitContext *ctx, ZDiag *diag) {
+  if (!elf_emit_byte_view_ptr(code, fun, value->left, ctx, diag)) return false;
+  elf_emit_push_rax(code);
+  if (!elf_emit_byte_view_len(code, fun, value->left, ctx, diag)) return false;
+  elf_emit_push_rax(code);
+  elf_emit_pop_reg64(code, 6);
+  elf_emit_pop_reg64(code, 7);
+  size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
+  return elf_record_runtime_json_parse_bytes_patch(ctx, patch, diag, value);
+}
+
 static bool elf_emit_byte_view_len(ZBuf *code, const IrFunction *fun, const IrValue *view, ElfEmitContext *ctx, ZDiag *diag) {
   unsigned len = 0;
   if (elf_byte_view_const_len(fun, view, &len)) {
@@ -566,6 +727,29 @@ static bool elf_emit_byte_view_len(ZBuf *code, const IrFunction *fun, const IrVa
       elf_append_u32(code, end - start);
       return true;
     }
+  }
+  if (view && view->kind == IR_VALUE_BYTE_SLICE && view->right) {
+    unsigned start = 0;
+    if ((!view->index || elf_const_u32_value(view->index, &start)) &&
+        !elf_const_u32_value(view->right, NULL)) {
+      if (!elf_emit_value(code, fun, view->right, ctx, diag)) return false;
+      if (start > 0) {
+        elf_append_u8(code, 0x48);
+        elf_append_u8(code, 0x2d);
+        elf_append_u32(code, start);
+      }
+      return true;
+    }
+  }
+  if (view && view->kind == IR_VALUE_BYTE_SLICE && view->index && view->right) {
+    if (!elf_emit_value(code, fun, view->index, ctx, diag)) return false;
+    elf_emit_push_rax(code);
+    if (!elf_emit_value(code, fun, view->right, ctx, diag)) return false;
+    elf_emit_pop_reg64(code, 1);
+    elf_append_u8(code, 0x48);
+    elf_append_u8(code, 0x29);
+    elf_append_u8(code, 0xc8);
+    return true;
   }
   if (view && view->kind == IR_VALUE_LOCAL && view->local_index < fun->local_len && fun->locals[view->local_index].type == IR_TYPE_BYTE_VIEW) {
     elf_emit_load_local_slot_rax(code, &fun->locals[view->local_index], 8);
@@ -745,13 +929,108 @@ static bool elf_emit_value(ZBuf *code, const IrFunction *fun, const IrValue *val
       if (value->arg_len > 6) return elf_diag(diag, "direct ELF64 call supports at most six arguments", value->line, value->column, "too many arguments");
       for (size_t i = 0; i < value->arg_len; i++) {
         if (!elf_emit_value(code, fun, value->args[i], ctx, diag)) return false;
-        elf_append_u8(code, 0x50);
+        elf_emit_push_rax(code);
       }
       for (size_t i = value->arg_len; i > 0; i--) {
         elf_emit_pop_reg64(code, param_regs[i - 1]);
       }
       size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
       return elf_record_call_patch(ctx, patch, value->callee_index, diag, value);
+    }
+    case IR_VALUE_JSON_PARSE_BYTES:
+      return elf_emit_json_parse_bytes_call(code, fun, value, ctx, diag);
+    case IR_VALUE_JSON_VALIDATE_BYTES:
+      if (!elf_emit_json_parse_bytes_call(code, fun, value, ctx, diag)) return false;
+      elf_append_u8(code, 0x48);
+      elf_append_u8(code, 0x83);
+      elf_append_u8(code, 0xf8);
+      elf_append_u8(code, 0x00);
+      elf_append_u8(code, 0x0f);
+      elf_append_u8(code, 0x9d);
+      elf_append_u8(code, 0xc0);
+      elf_append_u8(code, 0x0f);
+      elf_append_u8(code, 0xb6);
+      elf_append_u8(code, 0xc0);
+      return true;
+    case IR_VALUE_JSON_STREAM_TOKENS_BYTES: {
+      if (!elf_emit_json_parse_bytes_call(code, fun, value, ctx, diag)) return false;
+      elf_append_u8(code, 0x48);
+      elf_append_u8(code, 0x85);
+      elf_append_u8(code, 0xc0);
+      size_t ok = elf_emit_jcc32_placeholder(code, 0x89);
+      elf_append_u8(code, 0x48);
+      elf_append_u8(code, 0x31);
+      elf_append_u8(code, 0xc0);
+      elf_patch_rel32(code, ok, code->len);
+      return true;
+    }
+    case IR_VALUE_HTTP_FETCH: {
+      if (!elf_emit_byte_view_ptr(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_len(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_ptr(code, fun, value->right, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_len(code, fun, value->right, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_value(code, fun, value->index, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      elf_emit_pop_reg64(code, 8);
+      elf_emit_pop_reg64(code, 1);
+      elf_emit_pop_reg64(code, 2);
+      elf_emit_pop_reg64(code, 6);
+      elf_emit_pop_reg64(code, 7);
+      size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
+      return elf_record_runtime_http_fetch_patch(ctx, patch, diag, value);
+    }
+    case IR_VALUE_HTTP_RESULT_OK:
+    case IR_VALUE_HTTP_RESULT_STATUS:
+    case IR_VALUE_HTTP_RESULT_BODY_LEN:
+    case IR_VALUE_HTTP_RESULT_ERROR:
+    case IR_VALUE_HTTP_HEADER_FOUND:
+    case IR_VALUE_HTTP_HEADER_OFFSET:
+    case IR_VALUE_HTTP_HEADER_LEN: {
+      if (!elf_emit_value(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      elf_emit_pop_reg64(code, 7);
+      size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
+      if (value->kind == IR_VALUE_HTTP_RESULT_OK) return elf_record_runtime_http_result_ok_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_RESULT_STATUS) return elf_record_runtime_http_result_status_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_RESULT_BODY_LEN) return elf_record_runtime_http_result_body_len_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_RESULT_ERROR) return elf_record_runtime_http_result_error_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_HEADER_FOUND) return elf_record_runtime_http_header_found_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_HEADER_OFFSET) return elf_record_runtime_http_header_offset_patch(ctx, patch, diag, value);
+      return elf_record_runtime_http_header_len_patch(ctx, patch, diag, value);
+    }
+    case IR_VALUE_HTTP_RESPONSE_LEN:
+    case IR_VALUE_HTTP_RESPONSE_HEADERS_LEN:
+    case IR_VALUE_HTTP_RESPONSE_BODY_OFFSET: {
+      if (!elf_emit_byte_view_ptr(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_len(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      elf_emit_pop_reg64(code, 6);
+      elf_emit_pop_reg64(code, 7);
+      size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
+      if (value->kind == IR_VALUE_HTTP_RESPONSE_LEN) return elf_record_runtime_http_response_len_patch(ctx, patch, diag, value);
+      if (value->kind == IR_VALUE_HTTP_RESPONSE_HEADERS_LEN) return elf_record_runtime_http_response_headers_len_patch(ctx, patch, diag, value);
+      return elf_record_runtime_http_response_body_offset_patch(ctx, patch, diag, value);
+    }
+    case IR_VALUE_HTTP_HEADER_VALUE: {
+      if (!elf_emit_byte_view_ptr(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_len(code, fun, value->left, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_ptr(code, fun, value->right, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      if (!elf_emit_byte_view_len(code, fun, value->right, ctx, diag)) return false;
+      elf_emit_push_rax(code);
+      elf_emit_pop_reg64(code, 1);
+      elf_emit_pop_reg64(code, 2);
+      elf_emit_pop_reg64(code, 6);
+      elf_emit_pop_reg64(code, 7);
+      size_t patch = elf_emit_jmp32_placeholder(code, 0xe8);
+      return elf_record_runtime_http_header_value_patch(ctx, patch, diag, value);
     }
     case IR_VALUE_MEMORY_PEEK_U8:
       if (!elf_emit_value(code, fun, value->left, ctx, diag)) return false;
@@ -770,6 +1049,11 @@ static bool elf_emit_value(ZBuf *code, const IrFunction *fun, const IrValue *val
       elf_append_u32(code, 1);
       return true;
     case IR_VALUE_ARGS_LEN:
+      if (ctx && ctx->seed_main_process_args) {
+        elf_emit_push_reg64(code, 14);
+        elf_emit_pop_reg64(code, 0);
+        return true;
+      }
       elf_append_u8(code, 0x49);
       elf_append_u8(code, 0x8b);
       elf_append_u8(code, 0x07);
@@ -1360,11 +1644,11 @@ static bool elf_emit_value(ZBuf *code, const IrFunction *fun, const IrValue *val
       elf_emit_error_condition_from_rax(code);
       size_t ok_patch = elf_emit_jcc32_placeholder(code, 0x84);
       if (elf_function_propagates_to_process_exit(fun)) {
-        elf_emit_epilogue(code);
+        elf_emit_epilogue(code, fun, ctx);
       } else {
         elf_append_u8(code, 0xb8);
         elf_append_u32(code, 1);
-        elf_emit_epilogue(code);
+        elf_emit_epilogue(code, fun, ctx);
       }
       elf_patch_rel32(code, ok_patch, code->len);
       if (!elf_type_is_i64(value->type)) {
@@ -1675,19 +1959,34 @@ static bool elf_emit_world_write(ZBuf *text, const IrFunction *fun, const IrInst
 static bool elf_emit_args_get_to_local(ZBuf *text, const IrFunction *fun, const IrValue *value, const IrLocal *local, ElfEmitContext *ctx, ZDiag *diag) {
   if (!value || !value->left) return elf_diag(diag, "direct ELF64 std.args.get requires an index", value ? value->line : 1, value ? value->column : 1, "missing index");
   if (!elf_emit_value(text, fun, value->left, ctx, diag)) return false;
-  elf_append_u8(text, 0x49);
-  elf_append_u8(text, 0x3b);
-  elf_append_u8(text, 0x07);
+  if (ctx && ctx->seed_main_process_args) {
+    elf_emit_push_reg64(text, 14);
+    elf_emit_pop_reg64(text, 1);
+    elf_append_u8(text, 0x48);
+    elf_append_u8(text, 0x39);
+    elf_append_u8(text, 0xc8);
+  } else {
+    elf_append_u8(text, 0x49);
+    elf_append_u8(text, 0x3b);
+    elf_append_u8(text, 0x07);
+  }
   size_t in_range = elf_emit_jcc32_placeholder(text, 0x82);
   elf_emit_maybe_clear(text, local);
   size_t end = elf_emit_jmp32_placeholder(text, 0xe9);
   elf_patch_rel32(text, in_range, text->len);
 
-  elf_append_u8(text, 0x49);
-  elf_append_u8(text, 0x8b);
-  elf_append_u8(text, 0x44);
-  elf_append_u8(text, 0xc7);
-  elf_append_u8(text, 0x08);
+  if (ctx && ctx->seed_main_process_args) {
+    elf_append_u8(text, 0x49);
+    elf_append_u8(text, 0x8b);
+    elf_append_u8(text, 0x04);
+    elf_append_u8(text, 0xc7);
+  } else {
+    elf_append_u8(text, 0x49);
+    elf_append_u8(text, 0x8b);
+    elf_append_u8(text, 0x44);
+    elf_append_u8(text, 0xc7);
+    elf_append_u8(text, 0x08);
+  }
   elf_append_u8(text, 0x50);
   elf_emit_strlen_rax_to_ecx(text);
   elf_append_u8(text, 0xb8);
@@ -1711,20 +2010,25 @@ static bool elf_emit_env_get_to_local(ZBuf *text, const IrFunction *fun, const I
   elf_append_u8(text, 0x89);
   elf_append_u8(text, 0xc2);
 
-  elf_append_u8(text, 0x4d);
-  elf_append_u8(text, 0x8b);
-  elf_append_u8(text, 0x07);
-  elf_append_u8(text, 0x49);
-  elf_append_u8(text, 0x83);
-  elf_append_u8(text, 0xc0);
-  elf_append_u8(text, 0x02);
-  elf_append_u8(text, 0x49);
-  elf_append_u8(text, 0xc1);
-  elf_append_u8(text, 0xe0);
-  elf_append_u8(text, 0x03);
-  elf_append_u8(text, 0x4d);
-  elf_append_u8(text, 0x01);
-  elf_append_u8(text, 0xf8);
+  if (ctx && ctx->seed_main_process_args) {
+    elf_emit_push_reg64(text, 13);
+    elf_emit_pop_reg64(text, 8);
+  } else {
+    elf_append_u8(text, 0x4d);
+    elf_append_u8(text, 0x8b);
+    elf_append_u8(text, 0x07);
+    elf_append_u8(text, 0x49);
+    elf_append_u8(text, 0x83);
+    elf_append_u8(text, 0xc0);
+    elf_append_u8(text, 0x02);
+    elf_append_u8(text, 0x49);
+    elf_append_u8(text, 0xc1);
+    elf_append_u8(text, 0xe0);
+    elf_append_u8(text, 0x03);
+    elf_append_u8(text, 0x4d);
+    elf_append_u8(text, 0x01);
+    elf_append_u8(text, 0xf8);
+  }
 
   size_t env_loop = text->len;
   elf_append_u8(text, 0x49);
@@ -1849,7 +2153,7 @@ static bool elf_emit_read_all_or_raise_to_local(ZBuf *text, const IrFunction *fu
       elf_append_u8(text, 0xb8);
       elf_append_u32(text, 1);
     }
-    elf_emit_epilogue(text);
+    elf_emit_epilogue(text, fun, ctx);
     elf_patch_rel32(text, size_ok, text->len);
   }
   elf_append_u8(text, 0x58);
@@ -1916,7 +2220,7 @@ static bool elf_emit_read_all_or_raise_to_local(ZBuf *text, const IrFunction *fu
     elf_append_u8(text, 0xb8);
     elf_append_u32(text, 1);
   }
-  elf_emit_epilogue(text);
+  elf_emit_epilogue(text, fun, ctx);
 
   elf_patch_rel32(text, tell_fail, text->len);
   elf_append_u8(text, 0x58);
@@ -1926,7 +2230,7 @@ static bool elf_emit_read_all_or_raise_to_local(ZBuf *text, const IrFunction *fu
     elf_append_u8(text, 0xb8);
     elf_append_u32(text, 1);
   }
-  elf_emit_epilogue(text);
+  elf_emit_epilogue(text, fun, ctx);
 
   elf_patch_rel32(text, read_fail, text->len);
   elf_emit_packed_error_rax(text, IR_ERROR_IO);
@@ -1934,7 +2238,7 @@ static bool elf_emit_read_all_or_raise_to_local(ZBuf *text, const IrFunction *fu
     elf_append_u8(text, 0xb8);
     elf_append_u32(text, 1);
   }
-  elf_emit_epilogue(text);
+  elf_emit_epilogue(text, fun, ctx);
   elf_patch_rel32(text, end, text->len);
   return true;
 }
@@ -2113,6 +2417,35 @@ static bool elf_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *ins
         elf_emit_store_local_slot_reg(text, local, 8, 0, true);
         return true;
       }
+      if (instr->value->kind == IR_VALUE_JSON_PARSE_BYTES) {
+        if (instr->value->local_index >= fun->local_len || fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return elf_diag(diag, "direct ELF64 JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        const IrLocal *alloc = &fun->locals[instr->value->local_index];
+        if (!elf_emit_value(text, fun, instr->value, ctx, diag)) return false;
+        elf_append_u8(text, 0x48);
+        elf_append_u8(text, 0x85);
+        elf_append_u8(text, 0xc0);
+        size_t fail = elf_emit_js_placeholder(text);
+        elf_append_u8(text, 0x50);
+        elf_emit_load_local_slot_reg(text, alloc, 12, 1, false);
+        elf_append_u8(text, 0x01);
+        elf_append_u8(text, 0xc1);
+        elf_emit_load_local_slot_reg(text, alloc, 8, 2, false);
+        elf_append_u8(text, 0x39);
+        elf_append_u8(text, 0xd1);
+        size_t overflow = elf_emit_jcc32_placeholder(text, 0x87);
+        elf_append_u8(text, 0x58);
+        elf_emit_maybe_scalar_store_rax(text, local);
+        elf_emit_store_local_slot_reg(text, alloc, 12, 1, false);
+        size_t end = elf_emit_jmp32_placeholder(text, 0xe9);
+        elf_patch_rel32(text, overflow, text->len);
+        elf_append_u8(text, 0x58);
+        elf_patch_rel32(text, fail, text->len);
+        elf_emit_maybe_scalar_clear(text, local);
+        elf_patch_rel32(text, end, text->len);
+        return true;
+      }
       if (!elf_emit_value(text, fun, instr->value, ctx, diag)) return false;
       elf_append_u8(text, 0x48);
       elf_append_u8(text, 0x85);
@@ -2164,7 +2497,7 @@ static bool elf_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *ins
   if (instr->kind == IR_INSTR_RAISE) {
     if (!elf_function_propagates_to_process_exit(fun)) return elf_diag(diag, "direct ELF64 raise requires a fallible function context", instr->line, instr->column, "non-fallible context");
     elf_emit_packed_error_rax(text, instr->error_code ? instr->error_code : IR_ERROR_UNKNOWN);
-    elf_emit_epilogue(text);
+    elf_emit_epilogue(text, fun, ctx);
     return true;
   }
   if (instr->kind == IR_INSTR_RETURN) {
@@ -2177,7 +2510,7 @@ static bool elf_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *ins
       elf_append_u8(text, 0x89);
       elf_append_u8(text, 0xc0);
     }
-    elf_emit_epilogue(text);
+    elf_emit_epilogue(text, fun, ctx);
     return true;
   }
   if (instr->kind == IR_INSTR_IF) {
@@ -2224,7 +2557,9 @@ static bool elf_emit_function_text(ZBuf *text, const IrFunction *fun, ElfEmitCon
   elf_append_u8(text, 0x48);
   elf_append_u8(text, 0x89);
   elf_append_u8(text, 0xe5);
-  unsigned stack_size = (unsigned)elf_align(fun->frame_bytes, 16);
+  bool seed_process_args = elf_function_seeds_process_args(fun, ctx);
+  unsigned base_stack_size = elf_base_stack_size(fun);
+  unsigned stack_size = elf_total_stack_size(fun, ctx);
   if (stack_size > 0) {
     if (stack_size <= 127) {
       elf_append_u8(text, 0x48);
@@ -2238,6 +2573,17 @@ static bool elf_emit_function_text(ZBuf *text, const IrFunction *fun, ElfEmitCon
       elf_append_u32(text, stack_size);
     }
   }
+  if (seed_process_args) {
+    elf_emit_rbp_disp_reg(text, 0x89, 13, base_stack_size + 8, true);
+    elf_emit_rbp_disp_reg(text, 0x89, 14, base_stack_size + 16, true);
+    elf_emit_rbp_disp_reg(text, 0x89, 15, base_stack_size + 24, true);
+    elf_emit_push_reg64(text, 7);
+    elf_emit_pop_reg64(text, 14);
+    elf_emit_push_reg64(text, 6);
+    elf_emit_pop_reg64(text, 15);
+    elf_emit_push_reg64(text, 2);
+    elf_emit_pop_reg64(text, 13);
+  }
   for (size_t i = 0; i < fun->param_count; i++) {
     if (i < 6) {
       elf_emit_store_local_from_reg(text, fun, (unsigned)i, param_regs[i]);
@@ -2247,7 +2593,7 @@ static bool elf_emit_function_text(ZBuf *text, const IrFunction *fun, ElfEmitCon
     }
   }
   if (!elf_emit_instrs(text, fun, fun->instrs, fun->instr_len, ctx, diag)) return false;
-  if (fun->instr_len == 0 || fun->instrs[fun->instr_len - 1].kind != IR_INSTR_RETURN) elf_emit_epilogue(text);
+  if (fun->instr_len == 0 || fun->instrs[fun->instr_len - 1].kind != IR_INSTR_RETURN) elf_emit_epilogue(text, fun, ctx);
   return true;
 }
 
@@ -2348,6 +2694,7 @@ bool z_emit_elf64_object_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     .function_offsets = function_offsets,
     .function_count = ir->function_len,
     .emit_rodata_relocations = true,
+    .seed_main_process_args = true,
     .rodata_base_offset = rodata_base_offset
   };
 
@@ -2360,6 +2707,19 @@ bool z_emit_elf64_object_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
       free(symbol_names);
       free(ctx.call_patches);
       free(ctx.rodata_patches);
+      free(ctx.runtime_json_parse_bytes_patches);
+      free(ctx.runtime_http_fetch_patches);
+      free(ctx.runtime_http_result_ok_patches);
+      free(ctx.runtime_http_result_status_patches);
+      free(ctx.runtime_http_result_body_len_patches);
+      free(ctx.runtime_http_result_error_patches);
+      free(ctx.runtime_http_response_len_patches);
+      free(ctx.runtime_http_response_headers_len_patches);
+      free(ctx.runtime_http_response_body_offset_patches);
+      free(ctx.runtime_http_header_value_patches);
+      free(ctx.runtime_http_header_found_patches);
+      free(ctx.runtime_http_header_offset_patches);
+      free(ctx.runtime_http_header_len_patches);
       zbuf_free(&text);
       zbuf_free(&rodata);
       zbuf_free(&rela_text);
@@ -2373,13 +2733,210 @@ bool z_emit_elf64_object_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     zbuf_append(&strtab, ir->functions[i].name);
     elf_append_u8(&strtab, 0);
   }
+  const bool has_runtime_json_parse_bytes = ctx.runtime_json_parse_bytes_patch_len > 0;
+  const bool has_runtime_http_fetch = ctx.runtime_http_fetch_patch_len > 0;
+  const bool has_runtime_http_result_ok = ctx.runtime_http_result_ok_patch_len > 0;
+  const bool has_runtime_http_result_status = ctx.runtime_http_result_status_patch_len > 0;
+  const bool has_runtime_http_result_body_len = ctx.runtime_http_result_body_len_patch_len > 0;
+  const bool has_runtime_http_result_error = ctx.runtime_http_result_error_patch_len > 0;
+  const bool has_runtime_http_response_len = ctx.runtime_http_response_len_patch_len > 0;
+  const bool has_runtime_http_response_headers_len = ctx.runtime_http_response_headers_len_patch_len > 0;
+  const bool has_runtime_http_response_body_offset = ctx.runtime_http_response_body_offset_patch_len > 0;
+  const bool has_runtime_http_header_value = ctx.runtime_http_header_value_patch_len > 0;
+  const bool has_runtime_http_header_found = ctx.runtime_http_header_found_patch_len > 0;
+  const bool has_runtime_http_header_offset = ctx.runtime_http_header_offset_patch_len > 0;
+  const bool has_runtime_http_header_len = ctx.runtime_http_header_len_patch_len > 0;
+  uint32_t runtime_json_parse_bytes_name = 0;
+  uint32_t runtime_http_fetch_name = 0;
+  uint32_t runtime_http_result_ok_name = 0;
+  uint32_t runtime_http_result_status_name = 0;
+  uint32_t runtime_http_result_body_len_name = 0;
+  uint32_t runtime_http_result_error_name = 0;
+  uint32_t runtime_http_response_len_name = 0;
+  uint32_t runtime_http_response_headers_len_name = 0;
+  uint32_t runtime_http_response_body_offset_name = 0;
+  uint32_t runtime_http_header_value_name = 0;
+  uint32_t runtime_http_header_found_name = 0;
+  uint32_t runtime_http_header_offset_name = 0;
+  uint32_t runtime_http_header_len_name = 0;
+  if (has_runtime_json_parse_bytes) {
+    runtime_json_parse_bytes_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_json_parse_bytes");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_fetch) {
+    runtime_http_fetch_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_fetch_result");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_result_ok) {
+    runtime_http_result_ok_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_result_ok");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_result_status) {
+    runtime_http_result_status_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_result_status");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_result_body_len) {
+    runtime_http_result_body_len_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_result_body_len");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_result_error) {
+    runtime_http_result_error_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_result_error");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_response_len) {
+    runtime_http_response_len_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_response_len");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_response_headers_len) {
+    runtime_http_response_headers_len_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_response_headers_len");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_response_body_offset) {
+    runtime_http_response_body_offset_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_response_body_offset");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_header_value) {
+    runtime_http_header_value_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_header_value");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_header_found) {
+    runtime_http_header_found_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_header_found");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_header_offset) {
+    runtime_http_header_offset_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_header_offset");
+    elf_append_u8(&strtab, 0);
+  }
+  if (has_runtime_http_header_len) {
+    runtime_http_header_len_name = (uint32_t)strtab.len;
+    zbuf_append(&strtab, "zero_http_header_len");
+    elf_append_u8(&strtab, 0);
+  }
   elf_patch_call_patches(&text, &ctx);
   for (size_t i = 0; i < ctx.rodata_patch_len; i++) {
     elf_append_rela(&rela_text, ctx.rodata_patches[i].patch_offset, 1, 1, ctx.rodata_patches[i].data_offset - ctx.rodata_base_offset);
   }
+  const uint32_t function_symbol_base = has_rodata ? 2u : 1u;
+  uint32_t next_runtime_symbol = function_symbol_base + (uint32_t)ir->function_len;
+  uint32_t runtime_json_parse_bytes_symbol = 0;
+  uint32_t runtime_http_fetch_symbol = 0;
+  uint32_t runtime_http_result_ok_symbol = 0;
+  uint32_t runtime_http_result_status_symbol = 0;
+  uint32_t runtime_http_result_body_len_symbol = 0;
+  uint32_t runtime_http_result_error_symbol = 0;
+  uint32_t runtime_http_response_len_symbol = 0;
+  uint32_t runtime_http_response_headers_len_symbol = 0;
+  uint32_t runtime_http_response_body_offset_symbol = 0;
+  uint32_t runtime_http_header_value_symbol = 0;
+  uint32_t runtime_http_header_found_symbol = 0;
+  uint32_t runtime_http_header_offset_symbol = 0;
+  uint32_t runtime_http_header_len_symbol = 0;
+  if (has_runtime_json_parse_bytes) runtime_json_parse_bytes_symbol = next_runtime_symbol++;
+  if (has_runtime_http_fetch) runtime_http_fetch_symbol = next_runtime_symbol++;
+  if (has_runtime_http_result_ok) runtime_http_result_ok_symbol = next_runtime_symbol++;
+  if (has_runtime_http_result_status) runtime_http_result_status_symbol = next_runtime_symbol++;
+  if (has_runtime_http_result_body_len) runtime_http_result_body_len_symbol = next_runtime_symbol++;
+  if (has_runtime_http_result_error) runtime_http_result_error_symbol = next_runtime_symbol++;
+  if (has_runtime_http_response_len) runtime_http_response_len_symbol = next_runtime_symbol++;
+  if (has_runtime_http_response_headers_len) runtime_http_response_headers_len_symbol = next_runtime_symbol++;
+  if (has_runtime_http_response_body_offset) runtime_http_response_body_offset_symbol = next_runtime_symbol++;
+  if (has_runtime_http_header_value) runtime_http_header_value_symbol = next_runtime_symbol++;
+  if (has_runtime_http_header_found) runtime_http_header_found_symbol = next_runtime_symbol++;
+  if (has_runtime_http_header_offset) runtime_http_header_offset_symbol = next_runtime_symbol++;
+  if (has_runtime_http_header_len) runtime_http_header_len_symbol = next_runtime_symbol++;
+  for (size_t i = 0; i < ctx.runtime_json_parse_bytes_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_json_parse_bytes_patches[i].patch_offset, runtime_json_parse_bytes_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_fetch_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_fetch_patches[i].patch_offset, runtime_http_fetch_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_result_ok_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_result_ok_patches[i].patch_offset, runtime_http_result_ok_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_result_status_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_result_status_patches[i].patch_offset, runtime_http_result_status_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_result_body_len_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_result_body_len_patches[i].patch_offset, runtime_http_result_body_len_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_result_error_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_result_error_patches[i].patch_offset, runtime_http_result_error_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_response_len_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_response_len_patches[i].patch_offset, runtime_http_response_len_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_response_headers_len_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_response_headers_len_patches[i].patch_offset, runtime_http_response_headers_len_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_response_body_offset_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_response_body_offset_patches[i].patch_offset, runtime_http_response_body_offset_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_header_value_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_header_value_patches[i].patch_offset, runtime_http_header_value_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_header_found_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_header_found_patches[i].patch_offset, runtime_http_header_found_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_header_offset_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_header_offset_patches[i].patch_offset, runtime_http_header_offset_symbol, 4, -4);
+  }
+  for (size_t i = 0; i < ctx.runtime_http_header_len_patch_len; i++) {
+    elf_append_rela(&rela_text, ctx.runtime_http_header_len_patches[i].patch_offset, runtime_http_header_len_symbol, 4, -4);
+  }
 
   for (size_t i = 0; i < ir->function_len; i++) {
     elf_append_symbol(&symtab, symbol_names[i], ir->functions[i].is_exported ? 0x12 : 0x02, 1, function_offsets[i], function_sizes[i]);
+  }
+  if (has_runtime_json_parse_bytes) {
+    elf_append_symbol(&symtab, runtime_json_parse_bytes_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_fetch) {
+    elf_append_symbol(&symtab, runtime_http_fetch_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_result_ok) {
+    elf_append_symbol(&symtab, runtime_http_result_ok_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_result_status) {
+    elf_append_symbol(&symtab, runtime_http_result_status_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_result_body_len) {
+    elf_append_symbol(&symtab, runtime_http_result_body_len_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_result_error) {
+    elf_append_symbol(&symtab, runtime_http_result_error_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_response_len) {
+    elf_append_symbol(&symtab, runtime_http_response_len_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_response_headers_len) {
+    elf_append_symbol(&symtab, runtime_http_response_headers_len_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_response_body_offset) {
+    elf_append_symbol(&symtab, runtime_http_response_body_offset_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_header_value) {
+    elf_append_symbol(&symtab, runtime_http_header_value_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_header_found) {
+    elf_append_symbol(&symtab, runtime_http_header_found_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_header_offset) {
+    elf_append_symbol(&symtab, runtime_http_header_offset_name, 0x12, 0, 0, 0);
+  }
+  if (has_runtime_http_header_len) {
+    elf_append_symbol(&symtab, runtime_http_header_len_name, 0x12, 0, 0, 0);
   }
 
   elf_append_u8(&shstrtab, 0);
@@ -2469,6 +3026,19 @@ bool z_emit_elf64_object_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
   free(symbol_names);
   free(ctx.call_patches);
   free(ctx.rodata_patches);
+  free(ctx.runtime_json_parse_bytes_patches);
+  free(ctx.runtime_http_fetch_patches);
+  free(ctx.runtime_http_result_ok_patches);
+  free(ctx.runtime_http_result_status_patches);
+  free(ctx.runtime_http_result_body_len_patches);
+  free(ctx.runtime_http_result_error_patches);
+  free(ctx.runtime_http_response_len_patches);
+  free(ctx.runtime_http_response_headers_len_patches);
+  free(ctx.runtime_http_response_body_offset_patches);
+  free(ctx.runtime_http_header_value_patches);
+  free(ctx.runtime_http_header_found_patches);
+  free(ctx.runtime_http_header_offset_patches);
+  free(ctx.runtime_http_header_len_patches);
   zbuf_free(&text);
   zbuf_free(&rodata);
   zbuf_free(&rela_text);
@@ -2584,10 +3154,56 @@ bool z_emit_elf64_exe_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
       free(function_offsets);
       free(ctx.call_patches);
       free(ctx.rodata_patches);
+      free(ctx.runtime_json_parse_bytes_patches);
+      free(ctx.runtime_http_fetch_patches);
+      free(ctx.runtime_http_result_ok_patches);
+      free(ctx.runtime_http_result_status_patches);
+      free(ctx.runtime_http_result_body_len_patches);
+      free(ctx.runtime_http_result_error_patches);
+      free(ctx.runtime_http_response_len_patches);
+      free(ctx.runtime_http_response_headers_len_patches);
+      free(ctx.runtime_http_response_body_offset_patches);
+      free(ctx.runtime_http_header_value_patches);
+      free(ctx.runtime_http_header_found_patches);
+      free(ctx.runtime_http_header_offset_patches);
+      free(ctx.runtime_http_header_len_patches);
       zbuf_free(&text);
       zbuf_free(&rodata);
       return false;
     }
+  }
+  if (ctx.runtime_json_parse_bytes_patch_len > 0 ||
+      ctx.runtime_http_fetch_patch_len > 0 ||
+      ctx.runtime_http_result_ok_patch_len > 0 ||
+      ctx.runtime_http_result_status_patch_len > 0 ||
+      ctx.runtime_http_result_body_len_patch_len > 0 ||
+      ctx.runtime_http_result_error_patch_len > 0 ||
+      ctx.runtime_http_response_len_patch_len > 0 ||
+      ctx.runtime_http_response_headers_len_patch_len > 0 ||
+      ctx.runtime_http_response_body_offset_patch_len > 0 ||
+      ctx.runtime_http_header_value_patch_len > 0 ||
+      ctx.runtime_http_header_found_patch_len > 0 ||
+      ctx.runtime_http_header_offset_patch_len > 0 ||
+      ctx.runtime_http_header_len_patch_len > 0) {
+    free(function_offsets);
+    free(ctx.call_patches);
+    free(ctx.rodata_patches);
+    free(ctx.runtime_json_parse_bytes_patches);
+    free(ctx.runtime_http_fetch_patches);
+    free(ctx.runtime_http_result_ok_patches);
+    free(ctx.runtime_http_result_status_patches);
+    free(ctx.runtime_http_result_body_len_patches);
+    free(ctx.runtime_http_result_error_patches);
+    free(ctx.runtime_http_response_len_patches);
+    free(ctx.runtime_http_response_headers_len_patches);
+    free(ctx.runtime_http_response_body_offset_patches);
+    free(ctx.runtime_http_header_value_patches);
+    free(ctx.runtime_http_header_found_patches);
+    free(ctx.runtime_http_header_offset_patches);
+    free(ctx.runtime_http_header_len_patches);
+    zbuf_free(&text);
+    zbuf_free(&rodata);
+    return elf_diag(diag, "direct ELF64 executable runtime helpers require object emission and an explicit runtime link step", 1, 1, "use --emit obj and link zero_runtime.c");
   }
   elf_patch_rel32(&text, start_call_patch, function_offsets[main_index]);
   elf_patch_call_patches(&text, &ctx);
@@ -2632,6 +3248,19 @@ bool z_emit_elf64_exe_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
   free(function_offsets);
   free(ctx.call_patches);
   free(ctx.rodata_patches);
+  free(ctx.runtime_json_parse_bytes_patches);
+  free(ctx.runtime_http_fetch_patches);
+  free(ctx.runtime_http_result_ok_patches);
+  free(ctx.runtime_http_result_status_patches);
+  free(ctx.runtime_http_result_body_len_patches);
+  free(ctx.runtime_http_result_error_patches);
+  free(ctx.runtime_http_response_len_patches);
+  free(ctx.runtime_http_response_headers_len_patches);
+  free(ctx.runtime_http_response_body_offset_patches);
+  free(ctx.runtime_http_header_value_patches);
+  free(ctx.runtime_http_header_found_patches);
+  free(ctx.runtime_http_header_offset_patches);
+  free(ctx.runtime_http_header_len_patches);
   zbuf_free(&text);
   zbuf_free(&rodata);
   return true;

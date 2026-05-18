@@ -6,6 +6,7 @@ BUILD_STAMP := $(OUT).build
 HOST_ID := $(shell uname -s 2>/dev/null || echo unknown)-$(shell uname -m 2>/dev/null || echo unknown)
 BUILD_ID := $(HOST_ID)|$(CC)|$(CFLAGS)
 SRC := $(wildcard src/*.c)
+INCLUDES := $(wildcard include/*.h) $(wildcard src/*.inc)
 
 .PHONY: all clean install-local FORCE
 
@@ -18,7 +19,7 @@ $(BUILD_STAMP): FORCE
 		printf '%s\n' "$(BUILD_ID)" > $(BUILD_STAMP); \
 	fi
 
-$(OUT): $(BUILD_STAMP) $(SRC) include/zero.h
+$(OUT): $(BUILD_STAMP) $(SRC) $(INCLUDES)
 	@mkdir -p $(dir $(OUT))
 	$(CC) $(CFLAGS) -Iinclude $(SRC) -o $(OUT)
 

@@ -23,6 +23,8 @@
 
 #define ZERO_VERSION "0.1.2"
 
+#include "embedded_runtime_sources.inc"
+
 typedef enum {
   EMIT_C,
   EMIT_EXE,
@@ -311,6 +313,157 @@ static bool command_succeeds(const char *command) {
   return system(command) == 0;
 }
 
+typedef struct {
+  char *source_file;
+  char *include_dir;
+  char *header_file;
+} RuntimeCompileInputs;
+
+static char *runtime_path_with_suffix(const char *path, const char *suffix) {
+  ZBuf buf;
+  zbuf_init(&buf);
+  zbuf_append(&buf, path ? path : "");
+  zbuf_append(&buf, suffix ? suffix : "");
+  return buf.data;
+}
+
+static char *runtime_join_path(const char *left, const char *right) {
+  ZBuf buf;
+  zbuf_init(&buf);
+  zbuf_append(&buf, left ? left : "");
+  if (buf.len > 0 && buf.data[buf.len - 1] != '/' && buf.data[buf.len - 1] != '\\') zbuf_append_char(&buf, '/');
+  zbuf_append(&buf, right ? right : "");
+  return buf.data;
+}
+
+static bool runtime_make_dir(const char *path, ZDiag *diag) {
+#if defined(_WIN32)
+  int rc = mkdir(path);
+#else
+  int rc = mkdir(path, 0777);
+#endif
+  if (rc == 0 || errno == EEXIST) return true;
+  if (diag) {
+    diag->code = 2002;
+    diag->path = path;
+    diag->line = 1;
+    diag->column = 1;
+    diag->length = 1;
+    snprintf(diag->message, sizeof(diag->message), "failed to create runtime compile directory '%s': %s", path, strerror(errno));
+    snprintf(diag->help, sizeof(diag->help), "choose a writable output path");
+  }
+  return false;
+}
+
+static void runtime_compile_inputs_free(RuntimeCompileInputs *inputs) {
+  if (!inputs) return;
+  if (inputs->source_file) remove(inputs->source_file);
+  if (inputs->header_file) remove(inputs->header_file);
+  if (inputs->include_dir) rmdir(inputs->include_dir);
+  free(inputs->source_file);
+  free(inputs->include_dir);
+  free(inputs->header_file);
+  *inputs = (RuntimeCompileInputs){0};
+}
+
+static bool write_runtime_chunks_file(const char *path, const char *const *chunks, ZDiag *diag) {
+  if (!path || !chunks) return false;
+  ZBuf text;
+  zbuf_init(&text);
+  for (size_t i = 0; chunks[i]; i++) zbuf_append(&text, chunks[i]);
+  bool ok = z_write_file(path, text.data ? text.data : "", diag);
+  zbuf_free(&text);
+  return ok;
+}
+
+static void runtime_diag_preserve_path(ZDiag *diag) {
+  if (diag && diag->path) diag->path = z_strdup(diag->path);
+}
+
+static bool write_runtime_compile_inputs(
+  const char *runtime_object_file,
+  const char *source_suffix,
+  const char *const *source_chunks,
+  RuntimeCompileInputs *out,
+  ZDiag *diag
+) {
+  if (!runtime_object_file || !source_suffix || !source_chunks || !out) return false;
+  *out = (RuntimeCompileInputs){0};
+  out->source_file = runtime_path_with_suffix(runtime_object_file, source_suffix);
+  out->include_dir = runtime_path_with_suffix(runtime_object_file, ".include");
+  out->header_file = runtime_join_path(out->include_dir, "zero_runtime.h");
+  if (!out->source_file || !out->include_dir || !out->header_file) {
+    runtime_compile_inputs_free(out);
+    return false;
+  }
+  if (!runtime_make_dir(out->include_dir, diag) ||
+      !write_runtime_chunks_file(out->header_file, zero_embedded_zero_runtime_h, diag) ||
+      !write_runtime_chunks_file(out->source_file, source_chunks, diag)) {
+    runtime_diag_preserve_path(diag);
+    runtime_compile_inputs_free(out);
+    return false;
+  }
+  return true;
+}
+
+static bool compile_zero_runtime_object(const char *runtime_object_file, const ZToolchainPlan *plan, const Command *command, const ZTargetInfo *target, ZDiag *diag) {
+  RuntimeCompileInputs inputs = {0};
+  if (!write_runtime_compile_inputs(runtime_object_file, ".zero_runtime.c", zero_embedded_zero_runtime_c, &inputs, diag)) return false;
+  bool ok = z_toolchain_compile_c_object(plan, command ? command->profile : NULL, target, inputs.source_file, runtime_object_file, inputs.include_dir, "-std=c11 -Wall -Wextra -Wpedantic");
+  runtime_compile_inputs_free(&inputs);
+  if (!ok && diag) {
+    diag->code = 2003;
+    diag->line = 1;
+    diag->column = 1;
+    diag->length = 1;
+    snprintf(diag->message, sizeof(diag->message), "host runtime object build failed");
+    snprintf(diag->expected, sizeof(diag->expected), "C compiler can compile the embedded Zero runtime source");
+    snprintf(diag->actual, sizeof(diag->actual), "runtime object compile command failed");
+    snprintf(diag->help, sizeof(diag->help), "install a host C compiler or pass --cc for the runtime link plan");
+  }
+  return ok;
+}
+
+static bool compile_zero_http_curl_object(const char *runtime_object_file, const ZToolchainPlan *plan, const Command *command, const ZTargetInfo *target, ZDiag *diag) {
+  RuntimeCompileInputs inputs = {0};
+  if (!write_runtime_compile_inputs(runtime_object_file, ".zero_http_curl.c", zero_embedded_zero_http_curl_c, &inputs, diag)) return false;
+  bool ok = z_toolchain_compile_c_object(plan, command ? command->profile : NULL, target, inputs.source_file, runtime_object_file, inputs.include_dir, "-std=c11 -Wall -Wextra -Wpedantic");
+  runtime_compile_inputs_free(&inputs);
+  if (!ok && diag) {
+    diag->code = 2003;
+    diag->line = 1;
+    diag->column = 1;
+    diag->length = 1;
+    snprintf(diag->message, sizeof(diag->message), "HTTP runtime provider build failed");
+    snprintf(diag->expected, sizeof(diag->expected), "C compiler can compile the embedded HTTP provider source");
+    snprintf(diag->actual, sizeof(diag->actual), "HTTP provider compile command failed");
+    snprintf(diag->help, sizeof(diag->help), "install libcurl headers or pass --cc for the runtime link plan");
+  }
+  return ok;
+}
+
+static bool link_zero_runtime_executable(const char *object_file, const char *runtime_object_file, const char *http_object_file, const char *exe_file, const ZToolchainPlan *plan, const ZTargetInfo *target, ZDiag *diag) {
+#if defined(__linux__)
+  const char *linux_no_pie = " -no-pie";
+#else
+  const char *linux_no_pie = "";
+#endif
+  const char *object_files[3] = {object_file, runtime_object_file, http_object_file};
+  size_t object_count = http_object_file && http_object_file[0] ? 3 : 2;
+  bool ok = z_toolchain_link_objects(plan, target, object_files, object_count, exe_file, linux_no_pie, http_object_file && http_object_file[0] ? "-lcurl 2>/dev/null" : "2>/dev/null");
+  if (!ok && diag) {
+    diag->code = 2003;
+    diag->line = 1;
+    diag->column = 1;
+    diag->length = 1;
+    snprintf(diag->message, sizeof(diag->message), "host runtime link failed");
+    snprintf(diag->expected, sizeof(diag->expected), "direct object plus zero runtime object link successfully");
+    snprintf(diag->actual, sizeof(diag->actual), "runtime link command failed");
+    snprintf(diag->help, sizeof(diag->help), http_object_file && http_object_file[0] ? "install libcurl or inspect the direct object, runtime objects, and host C linker diagnostics" : "inspect the direct object, runtime object, and host C linker diagnostics");
+  }
+  return ok;
+}
+
 static char *command_first_line(const char *command) {
   FILE *pipe = popen(command, "r");
   if (!pipe) return z_strdup("");
@@ -409,8 +562,10 @@ typedef struct {
   bool world;
 } CapabilitySummary;
 
+#define STD_HELPER_MAX 192
+
 typedef struct {
-  bool used[128];
+  bool used[STD_HELPER_MAX];
 } HelperUseSummary;
 
 typedef struct {
@@ -533,8 +688,11 @@ static const StdHelperInfo std_helpers[] = {
   {"std.parse.parseU16", "Maybe<u16>", 1, "parse", "target-neutral", "no allocation", true},
   {"std.parse.parseU32", "Maybe<u32>", 1, "parse", "target-neutral", "no allocation", true},
   {"std.json.validate", "Bool", 1, "parse", "target-neutral", "no allocation", true},
+  {"std.json.validateBytes", "Bool", 1, "parse", "target-neutral", "no allocation", true},
   {"std.json.parse", "Maybe<JsonDoc>", 2, "alloc", "target-neutral", "uses explicit allocator only", true},
+  {"std.json.parseBytes", "Maybe<JsonDoc>", 2, "alloc", "target-neutral", "uses explicit allocator only", true},
   {"std.json.streamTokens", "usize", 1, "parse", "target-neutral", "streaming token count", true},
+  {"std.json.streamTokensBytes", "usize", 1, "parse", "target-neutral", "streaming token count", true},
   {"std.json.writeString", "Maybe<String>", 2, "parse", "target-neutral", "writes caller buffer", true},
   {"std.json.decodeBoundary", "String", 0, "parse", "target-neutral", "typed decode boundary metadata", false},
   {"std.time.ms", "Duration", 1, "time", "target-neutral", "no allocation", true},
@@ -562,10 +720,32 @@ static const StdHelperInfo std_helpers[] = {
   {"std.net.connect", "Maybe<Conn>", 2, "net", "host", "no allocation; returns unopened bootstrap handle", true},
   {"std.net.listen", "Maybe<Listener>", 2, "net", "host", "no allocation; returns unopened bootstrap handle", true},
   {"std.net.withTimeout", "Address", 2, "net", "target-neutral", "no allocation", true},
-  {"std.http.parseMethod", "HttpMethod", 1, "net", "target-neutral", "no allocation", true},
+  {"std.http.parseMethod", "HttpMethod", 1, "parse", "target-neutral", "no allocation", true},
   {"std.http.client", "HttpClient", 1, "net", "host", "borrows network capability", true},
   {"std.http.server", "HttpServer", 2, "net", "host", "borrows network capability", true},
-  {"std.http.bodyLen", "usize", 1, "memory", "target-neutral", "no allocation", true},
+  {"std.http.fetch", "HttpResult", 4, "net", "host-runtime", "writes caller response buffer from raw HTTP request envelope", true},
+  {"std.http.resultOk", "Bool", 1, "net", "host-runtime", "inspects HTTP result metadata", true},
+  {"std.http.resultStatus", "u16", 1, "net", "host-runtime", "reads HTTP status metadata", true},
+  {"std.http.resultBodyLen", "usize", 1, "net", "host-runtime", "reads response body length metadata", true},
+  {"std.http.resultError", "HttpError", 1, "net", "host-runtime", "reads transport error metadata", true},
+  {"std.http.errorNone", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorInvalidUrl", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorUnsupportedProtocol", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorDns", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorConnect", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorTls", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorTimeout", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorTooLarge", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorProviderUnavailable", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorIo", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.errorInvalidRequest", "HttpError", 0, "none", "target-neutral", "no allocation", false},
+  {"std.http.responseLen", "usize", 1, "memory", "host-runtime", "reads response bytes written into caller storage", true},
+  {"std.http.responseHeadersLen", "usize", 1, "memory", "host-runtime", "reads response header byte length", true},
+  {"std.http.responseBodyOffset", "usize", 1, "memory", "host-runtime", "reads body start offset within caller response storage", true},
+  {"std.http.headerValue", "HttpHeaderValue", 2, "memory", "host-runtime", "locates a response header value by name", true},
+  {"std.http.headerFound", "Bool", 1, "memory", "host-runtime", "inspects header-value metadata", true},
+  {"std.http.headerOffset", "usize", 1, "memory", "host-runtime", "reads header-value offset metadata", true},
+  {"std.http.headerLen", "usize", 1, "memory", "host-runtime", "reads header-value length metadata", true},
   {"std.http.tlsBoundary", "String", 0, "net", "host", "declares platform-or-C-library TLS boundary", false},
   {"std.fs.host", "Fs", 0, "fs", "host", "no allocation", true},
   {"std.fs.open", "Maybe<owned<File>>", 2, "fs", "host", "owned file handle", true},
@@ -673,7 +853,7 @@ static const StdHelperInfo *find_std_helper(const char *name) {
 
 static int find_std_helper_index(const char *name) {
   if (!name) return -1;
-  for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+  for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
     if (strcmp(std_helpers[i].name, name) == 0) return (int)i;
   }
   return -1;
@@ -2243,7 +2423,7 @@ static const char *diag_repair_id(int code) {
     case 3049: return "make-receiver-addressable-or-mutable";
     case 3102: return "initialize-missing-field";
     case 4004: return "choose-supported-direct-backend";
-    case 6002: return "remove-hosted-fs-or-use-host-target";
+    case 6002: return "choose-target-with-required-capability";
     case 8003: return "configure-target-c-dependency";
     case 9001: return "fix-package-dependency-path";
     case 9002: return "break-package-dependency-cycle";
@@ -2292,7 +2472,7 @@ static const char *diag_repair_summary(int code) {
     case 3049: return "Store the receiver in an addressable binding and use let mut for mutating methods.";
     case 3102: return "Initialize the missing shape field or add a default to the shape declaration.";
     case 4004: return "Use zero targets --json to choose a direct-supported target, or request --emit obj when only object emission exists.";
-    case 6002: return "Build for the host target or move hosted std.fs usage behind a host-only entry point.";
+    case 6002: return "Build for a target that provides the required capability, or move that capability behind a target-specific entry point.";
     case 8003: return "Use package-relative vendored headers/libraries or set the target sysroot instead of relying on host include, lib, or pkg-config discovery.";
     case 9001: return "Create the local dependency package or update the path in zero.json.";
     case 9002: return "Remove the package cycle or move shared code into an acyclic dependency.";
@@ -2329,10 +2509,10 @@ static const ExplainInfo explain_infos[] = {
   {
     "TAR002",
     "target",
-    "Hosted filesystem unavailable",
-    "The selected non-host target does not provide the hosted `std.fs` capability.",
-    "The current bootstrap filesystem helpers lower to host C file APIs. Non-host targets must not accidentally inherit that runtime behavior.",
-    "Build for the host target or move hosted `std.fs` usage out of the target-neutral entry point.",
+    "Target capability unavailable",
+    "The selected target does not provide a capability required by this program.",
+    "Zero checks required standard-library capabilities against the target manifest so native, web, and embedded builds do not silently inherit host behavior.",
+    "Build for a target that provides the required capability, or move that capability behind a target-specific entry point.",
     "zero check --target linux-musl-x64 conformance/native/fail/std-fs-target-unsupported.0",
     "zero build --target host examples/memory-package --out .zero/out/memory-package",
   },
@@ -3621,6 +3801,19 @@ typedef struct {
   bool path_remove_directory;
   bool path_unlink_file;
   bool path_rename;
+  bool zero_json_parse_bytes;
+  bool zero_http_fetch_result;
+  bool zero_http_result_ok;
+  bool zero_http_result_status;
+  bool zero_http_result_body_len;
+  bool zero_http_result_error;
+  bool zero_http_response_len;
+  bool zero_http_response_headers_len;
+  bool zero_http_response_body_offset;
+  bool zero_http_header_value;
+  bool zero_http_header_found;
+  bool zero_http_header_offset;
+  bool zero_http_header_len;
 } RuntimeImportAudit;
 
 static void runtime_import_audit_mark_fs_base(RuntimeImportAudit *audit) {
@@ -3672,6 +3865,47 @@ static void runtime_import_audit_value(const IrValue *value, RuntimeImportAudit 
     case IR_VALUE_FS_ATOMIC_WRITE:
       runtime_import_audit_mark_fs_base(audit);
       break;
+    case IR_VALUE_JSON_PARSE_BYTES:
+    case IR_VALUE_JSON_VALIDATE_BYTES:
+    case IR_VALUE_JSON_STREAM_TOKENS_BYTES:
+      audit->zero_json_parse_bytes = true;
+      break;
+    case IR_VALUE_HTTP_FETCH:
+      audit->zero_http_fetch_result = true;
+      break;
+    case IR_VALUE_HTTP_RESULT_OK:
+      audit->zero_http_result_ok = true;
+      break;
+    case IR_VALUE_HTTP_RESULT_STATUS:
+      audit->zero_http_result_status = true;
+      break;
+    case IR_VALUE_HTTP_RESULT_BODY_LEN:
+      audit->zero_http_result_body_len = true;
+      break;
+    case IR_VALUE_HTTP_RESULT_ERROR:
+      audit->zero_http_result_error = true;
+      break;
+    case IR_VALUE_HTTP_RESPONSE_LEN:
+      audit->zero_http_response_len = true;
+      break;
+    case IR_VALUE_HTTP_RESPONSE_HEADERS_LEN:
+      audit->zero_http_response_headers_len = true;
+      break;
+    case IR_VALUE_HTTP_RESPONSE_BODY_OFFSET:
+      audit->zero_http_response_body_offset = true;
+      break;
+    case IR_VALUE_HTTP_HEADER_VALUE:
+      audit->zero_http_header_value = true;
+      break;
+    case IR_VALUE_HTTP_HEADER_FOUND:
+      audit->zero_http_header_found = true;
+      break;
+    case IR_VALUE_HTTP_HEADER_OFFSET:
+      audit->zero_http_header_offset = true;
+      break;
+    case IR_VALUE_HTTP_HEADER_LEN:
+      audit->zero_http_header_len = true;
+      break;
     default:
       break;
   }
@@ -3712,6 +3946,54 @@ static RuntimeImportAudit runtime_import_audit_from_ir(const IrProgram *ir) {
   return audit;
 }
 
+static bool ir_value_needs_zero_runtime_object(const IrValue *value) {
+  if (!value) return false;
+  if (value->kind == IR_VALUE_JSON_PARSE_BYTES ||
+      value->kind == IR_VALUE_JSON_VALIDATE_BYTES ||
+      value->kind == IR_VALUE_JSON_STREAM_TOKENS_BYTES ||
+      value->kind == IR_VALUE_HTTP_FETCH ||
+      value->kind == IR_VALUE_HTTP_RESULT_OK ||
+      value->kind == IR_VALUE_HTTP_RESULT_STATUS ||
+      value->kind == IR_VALUE_HTTP_RESULT_BODY_LEN ||
+      value->kind == IR_VALUE_HTTP_RESULT_ERROR ||
+      value->kind == IR_VALUE_HTTP_RESPONSE_LEN ||
+      value->kind == IR_VALUE_HTTP_RESPONSE_HEADERS_LEN ||
+      value->kind == IR_VALUE_HTTP_RESPONSE_BODY_OFFSET ||
+      value->kind == IR_VALUE_HTTP_HEADER_VALUE ||
+      value->kind == IR_VALUE_HTTP_HEADER_FOUND ||
+      value->kind == IR_VALUE_HTTP_HEADER_OFFSET ||
+      value->kind == IR_VALUE_HTTP_HEADER_LEN) return true;
+  if (ir_value_needs_zero_runtime_object(value->index) ||
+      ir_value_needs_zero_runtime_object(value->left) ||
+      ir_value_needs_zero_runtime_object(value->right)) {
+    return true;
+  }
+  for (size_t i = 0; i < value->arg_len; i++) {
+    if (ir_value_needs_zero_runtime_object(value->args[i])) return true;
+  }
+  return false;
+}
+
+static bool ir_instrs_need_zero_runtime_object(const IrInstr *instrs, size_t len) {
+  for (size_t i = 0; instrs && i < len; i++) {
+    const IrInstr *instr = &instrs[i];
+    if (ir_value_needs_zero_runtime_object(instr->value) ||
+        ir_value_needs_zero_runtime_object(instr->index) ||
+        ir_instrs_need_zero_runtime_object(instr->then_instrs, instr->then_len) ||
+        ir_instrs_need_zero_runtime_object(instr->else_instrs, instr->else_len)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool ir_needs_zero_runtime_object(const IrProgram *ir) {
+  for (size_t i = 0; ir && i < ir->function_len; i++) {
+    if (ir_instrs_need_zero_runtime_object(ir->functions[i].instrs, ir->functions[i].instr_len)) return true;
+  }
+  return false;
+}
+
 static size_t runtime_import_audit_count(const RuntimeImportAudit *audit) {
   if (!audit) return 0;
   size_t count = 0;
@@ -3731,12 +4013,87 @@ static size_t runtime_import_audit_count(const RuntimeImportAudit *audit) {
   if (audit->path_remove_directory) count++;
   if (audit->path_unlink_file) count++;
   if (audit->path_rename) count++;
+  if (audit->zero_json_parse_bytes) count++;
+  if (audit->zero_http_fetch_result) count++;
+  if (audit->zero_http_result_ok) count++;
+  if (audit->zero_http_result_status) count++;
+  if (audit->zero_http_result_body_len) count++;
+  if (audit->zero_http_result_error) count++;
+  if (audit->zero_http_response_len) count++;
+  if (audit->zero_http_response_headers_len) count++;
+  if (audit->zero_http_response_body_offset) count++;
+  if (audit->zero_http_header_value) count++;
+  if (audit->zero_http_header_found) count++;
+  if (audit->zero_http_header_offset) count++;
+  if (audit->zero_http_header_len) count++;
   return count;
+}
+
+static size_t native_zero_runtime_import_count(const RuntimeImportAudit *audit) {
+  if (!audit) return 0;
+  size_t count = 0;
+  if (audit->zero_json_parse_bytes) count++;
+  if (audit->zero_http_fetch_result) count++;
+  if (audit->zero_http_result_ok) count++;
+  if (audit->zero_http_result_status) count++;
+  if (audit->zero_http_result_body_len) count++;
+  if (audit->zero_http_result_error) count++;
+  if (audit->zero_http_response_len) count++;
+  if (audit->zero_http_response_headers_len) count++;
+  if (audit->zero_http_response_body_offset) count++;
+  if (audit->zero_http_header_value) count++;
+  if (audit->zero_http_header_found) count++;
+  if (audit->zero_http_header_offset) count++;
+  if (audit->zero_http_header_len) count++;
+  return count;
+}
+
+static bool runtime_import_audit_uses_zero_runtime(const RuntimeImportAudit *audit) {
+  return native_zero_runtime_import_count(audit) > 0;
+}
+
+static bool runtime_import_audit_uses_http_provider(const RuntimeImportAudit *audit) {
+  return audit && audit->zero_http_fetch_result;
+}
+
+static void append_runtime_import_module_json(ZBuf *buf, const RuntimeImportAudit *audit, bool wasm_target, size_t import_count) {
+  if (import_count == 0) {
+    zbuf_append(buf, "null");
+    return;
+  }
+  bool uses_zero_runtime = runtime_import_audit_uses_zero_runtime(audit);
+  if (!wasm_target) {
+    append_json_string(buf, uses_zero_runtime ? "zero_runtime" : "wasi_snapshot_preview1");
+    return;
+  }
+  size_t zero_runtime_count = native_zero_runtime_import_count(audit);
+  if (zero_runtime_count > 0 && zero_runtime_count == import_count) {
+    append_json_string(buf, "zero_runtime");
+    return;
+  }
+  if (zero_runtime_count > 0) {
+    append_json_string(buf, "mixed");
+    return;
+  }
+  append_json_string(buf, "wasi_snapshot_preview1");
 }
 
 static bool append_runtime_import_functions_json(ZBuf *buf, const RuntimeImportAudit *audit, bool wasm_target) {
   bool first = true;
   zbuf_append(buf, "[");
+  if (audit && audit->zero_json_parse_bytes) append_json_string_array_item(buf, &first, "zero_json_parse_bytes");
+  if (audit && audit->zero_http_fetch_result) append_json_string_array_item(buf, &first, "zero_http_fetch_result");
+  if (audit && audit->zero_http_result_ok) append_json_string_array_item(buf, &first, "zero_http_result_ok");
+  if (audit && audit->zero_http_result_status) append_json_string_array_item(buf, &first, "zero_http_result_status");
+  if (audit && audit->zero_http_result_body_len) append_json_string_array_item(buf, &first, "zero_http_result_body_len");
+  if (audit && audit->zero_http_result_error) append_json_string_array_item(buf, &first, "zero_http_result_error");
+  if (audit && audit->zero_http_response_len) append_json_string_array_item(buf, &first, "zero_http_response_len");
+  if (audit && audit->zero_http_response_headers_len) append_json_string_array_item(buf, &first, "zero_http_response_headers_len");
+  if (audit && audit->zero_http_response_body_offset) append_json_string_array_item(buf, &first, "zero_http_response_body_offset");
+  if (audit && audit->zero_http_header_value) append_json_string_array_item(buf, &first, "zero_http_header_value");
+  if (audit && audit->zero_http_header_found) append_json_string_array_item(buf, &first, "zero_http_header_found");
+  if (audit && audit->zero_http_header_offset) append_json_string_array_item(buf, &first, "zero_http_header_offset");
+  if (audit && audit->zero_http_header_len) append_json_string_array_item(buf, &first, "zero_http_header_len");
   if (wasm_target && audit) {
     if (audit->fd_write) append_json_string_array_item(buf, &first, "fd_write");
     if (audit->fd_read) append_json_string_array_item(buf, &first, "fd_read");
@@ -3783,11 +4140,10 @@ static void append_wasm_memory_floor_json(ZBuf *buf, const SourceInput *input, b
 static void append_runtime_import_audit_json(ZBuf *buf, const IrProgram *ir, const SourceInput *input, const ZTargetInfo *target) {
   RuntimeImportAudit audit = runtime_import_audit_from_ir(ir);
   bool wasm_target = target_is_wasm_object(target);
-  size_t import_count = wasm_target ? runtime_import_audit_count(&audit) : 0;
+  size_t import_count = wasm_target ? runtime_import_audit_count(&audit) : native_zero_runtime_import_count(&audit);
   bool linear_memory = runtime_linear_memory_required(input, wasm_target, import_count);
   zbuf_append(buf, "{\"source\":\"direct-wasm-ir-scan\",\"module\":");
-  if (import_count > 0) append_json_string(buf, "wasi_snapshot_preview1");
-  else zbuf_append(buf, "null");
+  append_runtime_import_module_json(buf, &audit, wasm_target, import_count);
   zbuf_append(buf, ",\"functions\":");
   append_runtime_import_functions_json(buf, &audit, wasm_target);
   zbuf_appendf(buf, ",\"functionCount\":%zu", import_count);
@@ -3801,7 +4157,8 @@ static void append_runtime_import_audit_json(ZBuf *buf, const IrProgram *ir, con
 static void append_portable_runtime_json(ZBuf *buf, const IrProgram *ir, const SourceInput *input, const ZTargetInfo *target, const CapabilitySummary *caps) {
   RuntimeImportAudit audit = runtime_import_audit_from_ir(ir);
   bool wasm_target = target_is_wasm_object(target);
-  size_t import_count = wasm_target ? runtime_import_audit_count(&audit) : 0;
+  bool uses_zero_runtime = runtime_import_audit_uses_zero_runtime(&audit);
+  size_t import_count = wasm_target ? runtime_import_audit_count(&audit) : native_zero_runtime_import_count(&audit);
   bool linear_memory = runtime_linear_memory_required(input, wasm_target, import_count);
   zbuf_append(buf, "{\"schemaVersion\":1,\"target\":");
   append_json_string(buf, target ? target->name : z_host_target());
@@ -3811,16 +4168,16 @@ static void append_portable_runtime_json(ZBuf *buf, const IrProgram *ir, const S
   zbuf_append(buf, wasm_target ? "true" : "false");
   zbuf_append(buf, ",\"providerSpecificDeployment\":false,\"hostedDeployment\":\"out-of-scope\"");
   zbuf_append(buf, ",\"imports\":{\"source\":\"direct-wasm-ir-scan\",\"explicit\":");
-  zbuf_append(buf, wasm_target ? "true" : "false");
+  zbuf_append(buf, (wasm_target || uses_zero_runtime) ? "true" : "false");
   zbuf_append(buf, ",\"module\":");
-  if (import_count > 0) append_json_string(buf, "wasi_snapshot_preview1");
-  else zbuf_append(buf, "null");
+  append_runtime_import_module_json(buf, &audit, wasm_target, import_count);
   zbuf_append(buf, ",\"functions\":");
   append_runtime_import_functions_json(buf, &audit, wasm_target);
   zbuf_appendf(buf, ",\"functionCount\":%zu", import_count);
   zbuf_append(buf, ",\"adapter\":");
   if (target_name_is(target, "wasm32-web")) append_json_string(buf, "browser-worker-import-shim");
   else if (target_name_is(target, "wasm32-wasi")) append_json_string(buf, "wasi-preview1-import-shim");
+  else if (uses_zero_runtime) append_json_string(buf, "native-zero-runtime-object");
   else append_json_string(buf, "native-target-runtime");
   zbuf_append(buf, "},\"localRunner\":{\"covered\":");
   zbuf_append(buf, wasm_target ? "true" : "false");
@@ -3982,7 +4339,9 @@ static void append_release_target_contract_json(ZBuf *buf, const SourceInput *in
 static void append_object_backend_json(ZBuf *buf, const SourceInput *input, const ZTargetInfo *target, const Command *command, const char *emit_kind) {
   const char *direct_emitter = direct_emit_emitter(target, command, emit_kind);
   bool metadata_only_direct = emit_kind && (strcmp(emit_kind, "mem") == 0 || strcmp(emit_kind, "size") == 0);
-  if (metadata_only_direct || (direct_emitter && strcmp(direct_emitter, "none") != 0 &&
+  bool runtime_linked_exe = emit_kind && strcmp(emit_kind, "exe") == 0 && input && input->direct_host_runtime_import_count > 0;
+  if (runtime_linked_exe) direct_emitter = z_direct_object_emitter(target);
+  if (metadata_only_direct || runtime_linked_exe || (direct_emitter && strcmp(direct_emitter, "none") != 0 &&
       ((emit_kind && strcmp(emit_kind, "wasm") == 0) ||
        (emit_kind && strcmp(emit_kind, "obj") == 0) ||
        (emit_kind && strcmp(emit_kind, "exe") == 0 && command && command->backend)))) {
@@ -3993,6 +4352,13 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     const char *object_format = target && target->object_format ? target->object_format : "unknown";
     const char *arch = target && target->arch ? target->arch : "unknown";
     size_t direct_symbol_count = input ? input->direct_function_count : 0;
+    bool wasm_object = strcmp(object_format, "wasm") == 0;
+    bool uses_zero_runtime = input && input->direct_host_runtime_import_count > 0;
+    bool uses_http_runtime = input && input->direct_http_runtime_import_count > 0;
+    bool links_zero_runtime = uses_zero_runtime && !wasm_object;
+    bool links_http_runtime = uses_http_runtime && !wasm_object;
+    ZToolchainPlan runtime_toolchain = z_plan_toolchain(command ? command->cc : NULL, command ? command->profile : NULL, target);
+    const char *runtime_external_toolchain = links_zero_runtime ? public_compiler_label(&runtime_toolchain) : "none";
     zbuf_append(buf, "{\"internalIr\":{\"typeRepresentation\":\"MIR primitive value types\",\"controlFlowRepresentation\":\"MIR instruction stream lowered to target machine/module code\",\"callRepresentation\":\"same-object direct calls for supported direct subsets\",\"functionIdentity\":\"module-qualified-stable-sorted\",\"debugRepresentation\":\"source spans retained on MIR nodes\"}");
     bool direct_has_data = input && input->direct_readonly_data_bytes > 0;
     direct_symbol_count += input ? input->direct_runtime_helper_count : 0;
@@ -4001,22 +4367,40 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     zbuf_appendf(buf, ",\"objectEmission\":{\"path\":\"%s\",\"functions\":true,\"dataSections\":%s,\"symbols\":%s,\"relocations\":\"%s\",\"symbolCount\":%zu,\"internalHelperCount\":%zu}",
                  direct_object_path_for_emitter(direct_emitter),
                  direct_has_data ? "true" : "false",
-                 strcmp(object_format, "wasm") == 0 ? "false" : "true",
-                 strcmp(object_format, "wasm") == 0 ? "none-in-mvp" : (direct_has_data ? "patched-internal-calls-and-data-relocations" : "patched-internal-calls-or-none-in-mvp"),
+                 wasm_object ? "false" : "true",
+                 wasm_object ? "none-in-mvp" : (uses_zero_runtime ? "patched-runtime-import-relocations" : (direct_has_data ? "patched-internal-calls-and-data-relocations" : "patched-internal-calls-or-none-in-mvp")),
                  direct_symbol_count,
                  input && input->direct_function_count > input->direct_export_count ? input->direct_function_count - input->direct_export_count : 0);
     zbuf_append(buf, ",\"linking\":{\"linkerFlavor\":");
     append_json_string(buf, direct_linker_flavor_for_emitter(direct_emitter));
     zbuf_append(buf, ",\"objectFormat\":");
     append_json_string(buf, object_format);
-    zbuf_append(buf, ",\"targetLibraries\":\"none\",\"symbolMap\":");
-    append_json_string(buf, strcmp(object_format, "wasm") == 0 ? "not-emitted-in-mvp" : "object-symbol-table");
-    zbuf_append(buf, ",\"externalToolchain\":\"none\",\"toolchainSource\":\"direct-backend\",\"stripArtifacts\":false}");
+    zbuf_append(buf, ",\"targetLibraries\":");
+    append_json_string(buf, links_http_runtime ? "zero-runtime,curl" : (uses_zero_runtime ? (wasm_object ? "zero-runtime-import" : "zero-runtime") : "none"));
+    zbuf_append(buf, ",\"symbolMap\":");
+    append_json_string(buf, wasm_object ? "not-emitted-in-mvp" : "object-symbol-table");
+    zbuf_append(buf, ",\"externalToolchain\":");
+    append_json_string(buf, runtime_external_toolchain);
+    zbuf_append(buf, ",\"toolchainSource\":");
+    append_json_string(buf, uses_zero_runtime ? (wasm_object ? "direct-backend-runtime-import-plan" : "direct-backend-runtime-link-plan") : "direct-backend");
+    zbuf_append(buf, ",\"stripArtifacts\":false}");
+    if (links_http_runtime) {
+      zbuf_append(buf, ",\"httpRuntime\":");
+      z_append_http_runtime_json(buf, target);
+    }
     zbuf_append(buf, ",\"linkerPlan\":{\"format\":");
     append_json_string(buf, object_format);
     zbuf_append(buf, ",\"flavor\":");
     append_json_string(buf, direct_linker_flavor_for_emitter(direct_emitter));
-    zbuf_append(buf, ",\"archives\":[],\"staticLibraries\":[],\"importLibraries\":[],\"systemLibraries\":[],\"rpaths\":[],\"loadPaths\":[],\"visibility\":\"exported-c-and-main-only\",\"crossLinking\":true,\"externalToolchain\":\"none\",\"reproducible\":true,\"libcMode\":\"none\",\"targetLibcMode\":");
+    zbuf_append(buf, ",\"archives\":[],\"staticLibraries\":");
+    zbuf_append(buf, links_http_runtime ? "[\"zero_runtime.o\",\"zero_http_curl.o\"]" : (links_zero_runtime ? "[\"zero_runtime.o\"]" : "[]"));
+    zbuf_append(buf, ",\"importLibraries\":[],\"systemLibraries\":");
+    zbuf_append(buf, links_http_runtime ? "[\"curl\"]" : "[]");
+    zbuf_append(buf, ",\"rpaths\":[],\"loadPaths\":[],\"visibility\":\"exported-c-and-main-only\",\"crossLinking\":true,\"externalToolchain\":");
+    append_json_string(buf, runtime_external_toolchain);
+    zbuf_append(buf, ",\"reproducible\":true,\"libcMode\":");
+    append_json_string(buf, links_zero_runtime ? runtime_toolchain.libc_mode : "none");
+    zbuf_append(buf, ",\"targetLibcMode\":");
     append_json_string(buf, z_target_libc_mode(target));
     zbuf_appendf(buf, ",\"requiresSysroot\":false,\"targetRequiresSysroot\":%s,\"sysrootStatus\":",
                  z_target_requires_sysroot(target) ? "true" : "false");
@@ -6184,7 +6568,8 @@ static const char *helper_example_path(const StdHelperInfo *helper) {
   if (strcmp(module, "std.codec") == 0 || strcmp(module, "std.json") == 0) return "examples/std-data-formats.0";
   if (strcmp(module, "std.parse") == 0) return "examples/parse-cursor.0";
   if (strcmp(module, "std.time") == 0 || strcmp(module, "std.rand") == 0 || strcmp(module, "std.proc") == 0 || strcmp(module, "std.crypto") == 0) return "examples/std-platform.0";
-  if (strcmp(module, "std.net") == 0 || strcmp(module, "std.http") == 0) return "conformance/native/pass/std-net-http-breadth.0";
+  if (strcmp(module, "std.net") == 0) return "conformance/native/pass/std-net-http-breadth.0";
+  if (strcmp(module, "std.http") == 0) return "conformance/native/pass/std-http-fetch.0";
   return "examples/README.md";
 }
 
@@ -6197,9 +6582,14 @@ static void append_std_helper_object_json(ZBuf *buf, const StdHelperInfo *helper
   append_json_string(buf, helper->return_type);
   zbuf_appendf(buf, ",\"args\":%d,\"capability\":", helper->arg_count);
   append_json_string(buf, helper->capability);
-  zbuf_append(buf, ",\"effects\":[");
-  append_json_string(buf, helper->capability);
-  zbuf_append(buf, "]");
+  zbuf_append(buf, ",\"effects\":");
+  if (strcmp(helper->capability, "none") == 0) {
+    zbuf_append(buf, "[]");
+  } else {
+    zbuf_append(buf, "[");
+    append_json_string(buf, helper->capability);
+    zbuf_append(buf, "]");
+  }
   zbuf_append(buf, ",\"targetSupport\":");
   append_json_string(buf, helper->target_support);
   zbuf_append(buf, ",\"allocationBehavior\":");
@@ -6219,7 +6609,7 @@ static void append_std_helper_object_json(ZBuf *buf, const StdHelperInfo *helper
 static void append_used_stdlib_helpers_json(ZBuf *buf, const HelperUseSummary *helpers) {
   zbuf_append(buf, "[");
   bool wrote = false;
-  for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+  for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
     if (!helpers || !helpers->used[i]) continue;
     if (wrote) zbuf_append(buf, ", ");
     append_std_helper_object_json(buf, &std_helpers[i], true);
@@ -6230,12 +6620,12 @@ static void append_used_stdlib_helpers_json(ZBuf *buf, const HelperUseSummary *h
 
 static void append_top_emitted_helpers_json(ZBuf *buf, const HelperUseSummary *helpers) {
   zbuf_append(buf, "[");
-  bool emitted[128] = {0};
+  bool emitted[STD_HELPER_MAX] = {0};
   bool wrote = false;
   for (int rank = 0; rank < 5; rank++) {
     int best_index = -1;
     int best_bytes = -1;
-    for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+    for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
       if (!helpers || !helpers->used[i] || emitted[i] || !std_helpers[i].emits_runtime_helper) continue;
       int bytes = helper_estimated_direct_bytes(&std_helpers[i]);
       if (bytes > best_bytes) {
@@ -6334,7 +6724,7 @@ static void append_size_literals_json(ZBuf *buf, const SourceInput *input) {
 static void append_size_helper_breakdown_json(ZBuf *buf, const HelperUseSummary *helpers) {
   zbuf_append(buf, "[");
   bool wrote = false;
-  for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+  for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
     if (!helpers || !helpers->used[i]) continue;
     if (wrote) zbuf_append(buf, ", ");
     zbuf_append(buf, "{\"name\":");
@@ -6390,7 +6780,7 @@ static void append_retention_reasons_json(ZBuf *buf, const SourceInput *input, c
     zbuf_append(buf, "}");
     wrote = true;
   }
-  for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+  for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
     if (!helpers || !helpers->used[i]) continue;
     if (wrote) zbuf_append(buf, ", ");
     zbuf_append(buf, "{\"kind\":\"stdlibHelper\",\"name\":");
@@ -6429,7 +6819,7 @@ static void append_optimization_hints_json(ZBuf *buf, const SourceInput *input, 
   if (caps && caps->fs) APPEND_HINT("hosted-fs-runtime", "std.fs retains hosted filesystem capability shims; move file I/O out of target-neutral paths for smaller cross artifacts");
   if (input && input->direct_readonly_data_bytes > 0) APPEND_HINT("readonly-literals", "string and byte literals are retained by referenced code; inspect literal-heavy output before optimizing code");
   if (helpers) {
-    for (size_t i = 0; std_helpers[i].name && i < 128; i++) {
+    for (size_t i = 0; std_helpers[i].name && i < STD_HELPER_MAX; i++) {
       if (helpers->used[i] && std_helpers[i].emits_runtime_helper) {
         APPEND_HINT("pay-as-used-helper", "topLargestEmittedHelpers identifies the retained stdlib helper budget");
         break;
@@ -6443,7 +6833,7 @@ static void append_optimization_hints_json(ZBuf *buf, const SourceInput *input, 
 
 static size_t helper_count_used(const HelperUseSummary *helpers) {
   size_t count = 0;
-  for (size_t i = 0; helpers && std_helpers[i].name && i < 128; i++) {
+  for (size_t i = 0; helpers && std_helpers[i].name && i < STD_HELPER_MAX; i++) {
     if (helpers->used[i]) count++;
   }
   return count;
@@ -7842,6 +8232,8 @@ static void append_graph_json(ZBuf *buf, const SourceInput *input, const Program
   append_capability_json_array(buf, &target_caps);
   zbuf_append(buf, ",\"requiredCapabilitySupport\":");
   append_target_capability_facts_json(buf, target, &caps);
+  zbuf_append(buf, ",\"httpRuntime\":");
+  z_append_http_runtime_json(buf, target);
   zbuf_append(buf, "},\n");
   zbuf_append(buf, "  \"requiresCapabilities\": ");
   append_capability_json_array(buf, &caps);
@@ -8597,6 +8989,8 @@ int main(int argc, char **argv) {
   input.direct_allocator_helper_count = ir.direct_allocator_helper_count;
   input.direct_buffer_helper_count = ir.direct_buffer_helper_count;
   input.direct_runtime_helper_count = ir.direct_runtime_helper_count;
+  input.direct_host_runtime_import_count = ir.direct_host_runtime_import_count;
+  input.direct_http_runtime_import_count = ir.direct_http_runtime_import_count;
   if (strcmp(command.command, "mem") == 0) {
     ZBuf mem_json;
     zbuf_init(&mem_json);
@@ -8733,6 +9127,122 @@ int main(int argc, char **argv) {
   bool run_command = strcmp(command.command, "run") == 0;
   bool ship_command = strcmp(command.command, "ship") == 0;
   bool artifact_command = build_command || run_command || ship_command;
+  bool needs_zero_runtime = artifact_command && command.emit == EMIT_EXE && ir_needs_zero_runtime_object(&ir);
+  if (needs_zero_runtime) {
+    RuntimeImportAudit runtime_audit = runtime_import_audit_from_ir(&ir);
+    bool needs_http_runtime = runtime_import_audit_uses_http_provider(&runtime_audit);
+    const char *object_emitter = z_direct_object_emitter(target);
+    bool runtime_object_emitter_supported = object_emitter && (strcmp(object_emitter, "zero-macho64") == 0 || strcmp(object_emitter, "zero-elf64") == 0);
+    if (ship_command) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "host runtime link plan is not wired into ship yet; use zero build or zero run", &ir, &program);
+      z_free_source(&input);
+      return rc;
+    }
+    if (!runtime_object_emitter_supported) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "runtime helpers currently require the Mach-O or ELF64 object link plan", &ir, &program);
+      z_free_source(&input);
+      return rc;
+    }
+    if (needs_http_runtime && !z_target_is_host(target)) {
+      int rc = return_direct_backend_error(&command, &input, target, "exe", "HTTP runtime provider is host-only for direct executable links", &ir, &program);
+      z_free_source(&input);
+      return rc;
+    }
+
+    ZBuf object;
+    zbuf_init(&object);
+    phase_started = now_ms();
+    bool emitted_object = strcmp(object_emitter, "zero-macho64") == 0
+                            ? z_emit_macho64_object_from_ir(&ir, &object, &diag)
+                            : z_emit_elf64_object_from_ir(&ir, &object, &diag);
+    input.codegen_ms = now_ms() - phase_started;
+    if (!emitted_object) {
+      z_map_source_diag(&input, &diag);
+      if (!diag.path) diag.path = input.source_file;
+      if (command.json) print_diag_json(input.source_file, &diag);
+      else print_diag(input.source_file, &diag);
+      zbuf_free(&object);
+      z_free_ir_program(&ir);
+      z_free_program(&program);
+      z_free_source(&input);
+      return 1;
+    }
+
+    char *base_exe_file = command.out ? z_strdup(command.out) : z_default_out_path(input.source_file);
+    char *exe_file = apply_target_suffix(base_exe_file, target);
+    free(base_exe_file);
+    char *object_file = path_with_suffix(exe_file, ".zero.o");
+    char *runtime_object_file = path_with_suffix(exe_file, ".zero-runtime.o");
+    char *http_object_file = needs_http_runtime ? path_with_suffix(exe_file, ".zero-http-curl.o") : NULL;
+    ZToolchainPlan runtime_toolchain = z_plan_toolchain(command.cc, command.profile, target);
+
+    phase_started = now_ms();
+    input.emitted_object_cache_hit = compiler_cache_touch("emitted-object", compile_cache_key(&input, target, command.profile, strcmp(object_emitter, "zero-macho64") == 0 ? "direct-macho64-object-runtime-link" : "direct-elf64-object-runtime-link"));
+    bool wrote_object = z_write_binary_file(object_file, (const unsigned char *)object.data, object.len, &diag);
+    if (wrote_object) wrote_object = compile_zero_runtime_object(runtime_object_file, &runtime_toolchain, &command, target, &diag);
+    if (wrote_object && needs_http_runtime) wrote_object = compile_zero_http_curl_object(http_object_file, &runtime_toolchain, &command, target, &diag);
+    input.object_ms = now_ms() - phase_started;
+    if (!wrote_object) {
+      if (command.json) print_diag_json(diag.path ? diag.path : input.source_file, &diag);
+      else print_diag(diag.path ? diag.path : input.source_file, &diag);
+      free(http_object_file);
+      free(runtime_object_file);
+      free(object_file);
+      free(exe_file);
+      zbuf_free(&object);
+      z_free_ir_program(&ir);
+      z_free_program(&program);
+      z_free_source(&input);
+      return 1;
+    }
+
+    phase_started = now_ms();
+    bool linked = link_zero_runtime_executable(object_file, runtime_object_file, http_object_file, exe_file, &runtime_toolchain, target, &diag);
+    if (linked) chmod(exe_file, 0755);
+    input.link_ms = now_ms() - phase_started;
+    remove(object_file);
+    remove(runtime_object_file);
+    if (http_object_file) remove(http_object_file);
+    if (!linked) {
+      if (command.json) print_diag_json(diag.path ? diag.path : input.source_file, &diag);
+      else print_diag(diag.path ? diag.path : input.source_file, &diag);
+      free(http_object_file);
+      free(runtime_object_file);
+      free(object_file);
+      free(exe_file);
+      zbuf_free(&object);
+      z_free_ir_program(&ir);
+      z_free_program(&program);
+      z_free_source(&input);
+      return 1;
+    }
+
+    if (run_command) {
+      int rc = run_executable_artifact(exe_file, &command);
+      free(http_object_file);
+      free(runtime_object_file);
+      free(object_file);
+      free(exe_file);
+      zbuf_free(&object);
+      z_free_ir_program(&ir);
+      z_free_program(&program);
+      z_free_source(&input);
+      return rc;
+    }
+
+    long long elapsed_ms = now_ms() - command_started_ms;
+    if (command.json) print_build_json(&command, &input, &program, target, "exe", exe_file, file_size_or_negative(exe_file), 0, elapsed_ms);
+    else print_artifact(exe_file, elapsed_ms);
+    free(http_object_file);
+    free(runtime_object_file);
+    free(object_file);
+    free(exe_file);
+    zbuf_free(&object);
+    z_free_ir_program(&ir);
+    z_free_program(&program);
+    z_free_source(&input);
+    return 0;
+  }
   bool default_direct_exe = artifact_command && command.emit == EMIT_EXE && direct_exe_emitter && strcmp(direct_exe_emitter, "none") != 0 && !command.backend && self_host_subset_compatible(&program, &direct_exe_caps);
   bool requested_direct_exe = artifact_command && command.emit == EMIT_EXE && command.backend &&
                               (strcmp(command.backend, "zero-elf64") == 0 ||

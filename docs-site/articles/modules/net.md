@@ -35,5 +35,7 @@ pub fun main(world: World) -> Void raises {
 
 ## Design Notes
 
-`std.net` exposes network capability metadata and bootstrap handles. It does not
-provide socket read/write APIs in the current public surface.
+`std.net` exposes network capability metadata and bootstrap handles. Current
+fixtures expect connection and listener handles to be absent. It does not
+provide socket read/write APIs in the current public surface. Outbound HTTP is
+exposed through `std.http.fetch(...)` rather than through raw sockets.

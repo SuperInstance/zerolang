@@ -1003,12 +1003,15 @@ const directMachODataRelocOffset = directMachODataBytes.readUInt32LE(directMachO
 const directMachODataRelocCount = directMachODataBytes.readUInt32LE(directMachODataSection + 60);
 assert(directMachODataRelocOffset > 0);
 assert(directMachODataRelocCount > 0);
-let sawMachOUnsignedReloc = false;
+let sawMachOPageReloc = false;
+let sawMachOPageoffReloc = false;
 for (let i = 0; i < directMachODataRelocCount; i++) {
   const info = directMachODataBytes.readUInt32LE(directMachODataRelocOffset + i * 8 + 4);
-  sawMachOUnsignedReloc ||= ((info >>> 28) & 15) === 0;
+  sawMachOPageReloc ||= ((info >>> 28) & 15) === 3;
+  sawMachOPageoffReloc ||= ((info >>> 28) & 15) === 4;
 }
-assert.equal(sawMachOUnsignedReloc, true);
+assert.equal(sawMachOPageReloc, true);
+assert.equal(sawMachOPageoffReloc, true);
 const directMachOWorldPath = join(outDir, "direct-darwin-arm64-world.o");
 rmSync(directMachOWorldPath, { force: true });
 const directMachOWorldReport = json(["build", "--json", "--emit", "obj", "--target", "darwin-arm64", "examples/hello.0", "--out", directMachOWorldPath]).body;
@@ -1444,23 +1447,23 @@ assert.equal(zeroHashMem.cBridgeFallback, false);
 assert.deepEqual(zeroHashMem.capabilityFacts.requiredCapabilities, ["args", "fs", "memory", "alloc", "codec", "world"]);
 
 const explainText = zero(["explain", "TAR002"]).stdout;
-assert.match(explainText, /Hosted filesystem unavailable/);
+assert.match(explainText, /Target capability unavailable/);
 
 const explainJson = json(["explain", "--json", "TAR002"]).body;
 assert.equal(explainJson.schemaVersion, 1);
 assert.equal(explainJson.code, "TAR002");
-assert.equal(explainJson.repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(explainJson.repair.id, "choose-target-with-required-capability");
 
 const fixPlan = json(["fix", "--plan", "--json", "--target", "wasm32-web", "conformance/native/fail/std-fs-target-unsupported.0"]).body;
 assert.equal(fixPlan.schemaVersion, 1);
 assert.equal(fixPlan.mode, "plan");
 assert.equal(fixPlan.appliesEdits, false);
-assert.equal(fixPlan.fixes[0].id, "remove-hosted-fs-or-use-host-target");
+assert.equal(fixPlan.fixes[0].id, "choose-target-with-required-capability");
 assert.equal(fixPlan.selfHostRepairPolicy.unsupportedFeatureSafety, "requires-human-review");
 assert.equal(fixPlan.selfHostRepairPolicy.directFallback, "never-c-bridge");
 const targetDeniedCapability = json(["check", "--json", "--target", "wasm32-web", "conformance/native/fail/std-fs-target-unsupported.0"], { allowFailure: true }).body;
 assert.equal(targetDeniedCapability.diagnostics[0].code, "TAR002");
-assert.equal(targetDeniedCapability.diagnostics[0].repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetDeniedCapability.diagnostics[0].repair.id, "choose-target-with-required-capability");
 assert.equal(targetDeniedCapability.generatedCBytes ?? 0, 0);
 
 const routes = json(["routes", "--json", "examples/web/hello"]).body;
@@ -1556,6 +1559,15 @@ assert.equal(graphMemCopyHelper.errorBehavior, "infallible");
 assert.match(graphMemCopyHelper.ownershipNotes, /caller-owned storage/);
 assert.equal(graphMemCopyHelper.example, "examples/memory-primitives.0");
 assert.equal(graphMemCopyHelper.apiStability, "bootstrap-stable");
+
+const httpErrorsGraph = json(["graph", "--json", "conformance/native/pass/std-http-errors.0"]).body;
+assert.deepEqual(httpErrorsGraph.requiresCapabilities, []);
+const httpTimeoutHelper = httpErrorsGraph.stdlibHelpers.find((helper) => helper.name === "std.http.errorTimeout");
+assert.equal(httpTimeoutHelper.returnType, "HttpError");
+assert.equal(httpTimeoutHelper.capability, "none");
+assert.deepEqual(httpTimeoutHelper.effects, []);
+assert.equal(httpTimeoutHelper.allocationBehavior, "no allocation");
+assert.equal(httpTimeoutHelper.ownershipNotes, "no ownership transfer");
 
 const coreGraph = json(["graph", "--json", "examples/static-method.0"]).body;
 const counterShape = coreGraph.shapes.find((shape) => shape.name === "Counter");
@@ -1690,7 +1702,7 @@ assert.equal(diagnostics.find((item) => item.code === "ERR003").repair.id, "chec
 assert.equal(diagnostics.find((item) => item.code === "TYP025").repair.id, "add-explicit-generic-type-arguments");
 assert.equal(diagnostics.find((item) => item.code === "TYP009").repair.id, "make-binding-mutable");
 assert.equal(diagnostics.find((item) => item.code === "FLD002").repair.id, "initialize-missing-field");
-assert.equal(diagnostics.find((item) => item.code === "TAR002").repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(diagnostics.find((item) => item.code === "TAR002").repair.id, "choose-target-with-required-capability");
 assert.equal(diagnostics.find((item) => item.code === "PUB001").repair.id, "add-public-api-type");
 assert.equal(diagnostics.find((item) => item.code === "IMP001").repair.id, "fix-import-path");
 assert.match(diagnostics.find((item) => item.code === "TAR002").help, /host target|hosted std\.fs/);
@@ -1742,7 +1754,7 @@ assert.equal(badCAbi.diagnostics[0].code, "ABI001");
 const report = {
   generatedAt: new Date().toISOString(),
   explain: {
-    textIncludesTitle: explainText.includes("Hosted filesystem unavailable"),
+    textIncludesTitle: explainText.includes("Target capability unavailable"),
     jsonCode: explainJson.code,
   },
   fixPlan: {

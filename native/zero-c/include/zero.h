@@ -110,6 +110,7 @@ struct Expr {
   bool moves_ownership;
   bool mutable_borrow;
   bool bool_value;
+  bool array_repeat;
   Expr *left;
   Expr *right;
   ExprVec args;
@@ -410,6 +411,21 @@ typedef enum {
   IR_VALUE_FS_DIR_ENTRY_COUNT,
   IR_VALUE_FS_TEMP_NAME,
   IR_VALUE_FS_ATOMIC_WRITE,
+  IR_VALUE_JSON_PARSE_BYTES,
+  IR_VALUE_JSON_VALIDATE_BYTES,
+  IR_VALUE_JSON_STREAM_TOKENS_BYTES,
+  IR_VALUE_HTTP_FETCH,
+  IR_VALUE_HTTP_RESULT_OK,
+  IR_VALUE_HTTP_RESULT_STATUS,
+  IR_VALUE_HTTP_RESULT_BODY_LEN,
+  IR_VALUE_HTTP_RESULT_ERROR,
+  IR_VALUE_HTTP_RESPONSE_LEN,
+  IR_VALUE_HTTP_RESPONSE_HEADERS_LEN,
+  IR_VALUE_HTTP_RESPONSE_BODY_OFFSET,
+  IR_VALUE_HTTP_HEADER_VALUE,
+  IR_VALUE_HTTP_HEADER_FOUND,
+  IR_VALUE_HTTP_HEADER_OFFSET,
+  IR_VALUE_HTTP_HEADER_LEN,
   IR_VALUE_FIELD_LOAD,
   IR_VALUE_CHECK,
   IR_VALUE_RESCUE
@@ -561,6 +577,8 @@ typedef struct {
   size_t direct_allocator_helper_count;
   size_t direct_buffer_helper_count;
   size_t direct_runtime_helper_count;
+  size_t direct_host_runtime_import_count;
+  size_t direct_http_runtime_import_count;
 } IrProgram;
 
 typedef struct {
@@ -625,6 +643,8 @@ typedef struct {
   size_t direct_allocator_helper_count;
   size_t direct_buffer_helper_count;
   size_t direct_runtime_helper_count;
+  size_t direct_host_runtime_import_count;
+  size_t direct_http_runtime_import_count;
   bool parse_cache_hit;
   bool interface_cache_hit;
   bool check_cache_hit;
@@ -715,6 +735,8 @@ bool z_parse_manifest_json(const char *manifest, ZManifest *out, ZDiag *diag);
 void z_free_manifest(ZManifest *manifest);
 char *z_default_out_path(const char *source_file);
 ZToolchainPlan z_plan_toolchain(const char *cc, const char *profile, const ZTargetInfo *target);
+bool z_toolchain_compile_c_object(const ZToolchainPlan *plan, const char *profile, const ZTargetInfo *target, const char *c_file, const char *object_file, const char *include_dir, const char *extra_c_flags);
+bool z_toolchain_link_objects(const ZToolchainPlan *plan, const ZTargetInfo *target, const char *const *object_files, size_t object_count, const char *exe_file, const char *pre_link_flags, const char *post_object_flags);
 bool z_run_cc(const char *c_file, const char *exe_file, const char *cc, const char *profile, const ZTargetInfo *target);
 
 TokenVec z_tokenize(const char *source, ZDiag *diag);
@@ -754,6 +776,7 @@ const char *z_direct_backend_status(const ZTargetInfo *target);
 const char *z_direct_object_emitter(const ZTargetInfo *target);
 const char *z_direct_exe_emitter(const ZTargetInfo *target);
 const char *z_direct_backend_reason(const ZTargetInfo *target);
+void z_append_http_runtime_json(ZBuf *buf, const ZTargetInfo *target);
 void z_append_targets_json(ZBuf *buf);
 void z_append_target_names_json(ZBuf *buf);
 

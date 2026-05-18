@@ -798,8 +798,8 @@ function emitSelfHostTargetDeniedDiagnostic({ command, sourceFile, target, json 
         help: "remove hosted std.fs usage or use a host target with filesystem support",
         fixSafety: "requires-human-review",
         repair: {
-          id: "remove-hosted-fs-or-use-host-target",
-          summary: "Move filesystem code behind a host-target entry point or build for a host target.",
+          id: "choose-target-with-required-capability",
+          summary: "Build for a target with the required capability or move the code behind a target-specific entry point.",
         },
         related: [{ path: sourceFile, line: 1, column: 1, message: `${target} lacks Fs capability for this entry point` }],
       },

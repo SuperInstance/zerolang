@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { jsonByteTokenCount } from "../scripts/json-byte-token-count.mjs";
 
 if (process.env.ZERO_NATIVE_TEST_SANDBOX !== "1" && process.env.ZERO_NATIVE_TEST_ALLOW_LOCAL !== "1") {
   console.error("conformance emits native test artifacts; run `npm run conformance` for Vercel Sandbox execution or set ZERO_NATIVE_TEST_ALLOW_LOCAL=1 to opt into local artifacts.");
@@ -24,6 +25,24 @@ function runnableExeArgs(input, out) {
 }
 
 await mkdir(outDir, { recursive: true });
+
+async function instantiateJsonRuntimeWasm(bytes) {
+  let instance;
+  const imports = {
+    zero_runtime: {
+      zero_json_parse_bytes(ptr, len) {
+        try {
+          return jsonByteTokenCount(new Uint8Array(instance.exports.memory.buffer, ptr, len));
+        } catch {
+          return -1n;
+        }
+      },
+    },
+  };
+  const instantiated = await WebAssembly.instantiate(bytes, imports);
+  instance = instantiated.instance;
+  return instantiated;
+}
 
 async function assertBoundsTrap(fixture, name) {
   const out = `${outDir}/${name}`;
@@ -247,9 +266,19 @@ for (const fixture of [
   "conformance/native/pass/std-fs-breadth.0",
   "conformance/native/pass/std-path-io-breadth.0",
   "conformance/native/pass/std-net-http-breadth.0",
+  "conformance/native/pass/std-http-metadata-neutral.0",
+  "conformance/native/pass/std-http-fetch.0",
+  "conformance/native/pass/std-http-errors.0",
+  "conformance/native/pass/std-http-response-helpers.0",
   "conformance/native/pass/std-data-formats.0",
+  "conformance/native/pass/std-json-bytes.0",
+  "conformance/native/pass/std-json-inline-bytes.0",
+  "conformance/native/pass/std-json-duplicate-keys.0",
+  "conformance/native/pass/std-json-allocator-capacity.0",
   "conformance/native/pass/std-platform-basics.0",
   "conformance/native/pass/std-mem-arrays.0",
+  "conformance/native/pass/array-repeat-literal.0",
+  "conformance/native/pass/array-repeat-record-field.0",
   "conformance/native/pass/integer-widths.0",
   "conformance/native/pass/std-codec-widths.0",
   "conformance/native/pass/parse-integers.0",
@@ -648,12 +677,15 @@ const directMachODataRelocOffset = directMachODataBytes.readUInt32LE(directMachO
 const directMachODataRelocCount = directMachODataBytes.readUInt32LE(directMachODataSection + 60);
 assert(directMachODataRelocOffset > 0);
 assert(directMachODataRelocCount > 0);
-let sawMachOUnsignedReloc = false;
+let sawMachOPageReloc = false;
+let sawMachOPageoffReloc = false;
 for (let i = 0; i < directMachODataRelocCount; i++) {
   const info = directMachODataBytes.readUInt32LE(directMachODataRelocOffset + i * 8 + 4);
-  sawMachOUnsignedReloc ||= ((info >>> 28) & 15) === 0;
+  sawMachOPageReloc ||= ((info >>> 28) & 15) === 3;
+  sawMachOPageoffReloc ||= ((info >>> 28) & 15) === 4;
 }
-assert.equal(sawMachOUnsignedReloc, true);
+assert.equal(sawMachOPageReloc, true);
+assert.equal(sawMachOPageoffReloc, true);
 
 const directCoffObjOut = `${outDir}/direct-call-add-win-x64.obj`;
 const directCoffObjJson = await execFileAsync(zero, ["build", "--json", "--emit", "obj", "--target", "win32-x64.exe", "examples/direct-call-add.0", "--out", directCoffObjOut]);
@@ -709,6 +741,14 @@ assert(directArrayObjBody.objectBackend.directFacts.maxFrameBytes > 0);
 assert.equal(directArrayObjBody.objectBackend.objectEmission.path, "direct-elf64-object");
 await assertElf64Object(directArrayObjOut, "main");
 
+const directArrayRepeatRecordFieldOut = `${outDir}/direct-array-repeat-record-field.o`;
+const directArrayRepeatRecordFieldJson = await execFileAsync(zero, ["build", "--json", "--emit", "obj", "--target", "linux-musl-x64", "conformance/native/pass/array-repeat-record-field.0", "--out", directArrayRepeatRecordFieldOut]);
+const directArrayRepeatRecordFieldBody = JSON.parse(directArrayRepeatRecordFieldJson.stdout);
+assert.equal(directArrayRepeatRecordFieldBody.emit, "obj");
+assert.equal(directArrayRepeatRecordFieldBody.generatedCBytes, 0);
+assert.equal(directArrayRepeatRecordFieldBody.objectBackend.objectEmission.path, "direct-elf64-object");
+await assertElf64Object(directArrayRepeatRecordFieldOut, "main");
+
 const directExeOut = `${outDir}/direct-exe-return`;
 const directExeJson = await execFileAsync(zero, ["build", "--json", "--emit", "exe", "--backend", "zero-elf64", "--target", "linux-musl-x64", "examples/direct-exe-return.0", "--out", directExeOut]);
 const directExeBody = JSON.parse(directExeJson.stdout);
@@ -733,6 +773,7 @@ assert.equal(directAarch64ExeBody.objectBackend.targetFacts.status, "native-exe"
 await assertElfAarch64Executable(directAarch64ExeOut);
 
 const directMachOExeOut = `${outDir}/direct-macho-exe-return`;
+await rm(directMachOExeOut, { force: true });
 const directMachOExeJson = await execFileAsync(zero, ["build", "--json", "--emit", "exe", "--backend", "zero-macho64", "--target", "darwin-arm64", "examples/direct-exe-return.0", "--out", directMachOExeOut]);
 const directMachOExeBody = JSON.parse(directMachOExeJson.stdout);
 assert.equal(directMachOExeBody.emit, "exe");
@@ -848,6 +889,52 @@ assert.equal(directByteViewLocalsBody.objectBackend.directFacts.runtime.readonly
 const directByteViewLocalsBytes = await readFile(`${directByteViewLocalsOut}.wasm`);
 const directByteViewLocalsInstance = await WebAssembly.instantiate(directByteViewLocalsBytes, {});
 assert.equal(directByteViewLocalsInstance.instance.exports.main(), 107);
+
+const directJsonBytesOut = `${outDir}/direct-json-bytes`;
+const directJsonBytesJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-bytes.0", "--out", directJsonBytesOut]);
+const directJsonBytesBody = JSON.parse(directJsonBytesJson.stdout);
+assert.equal(directJsonBytesBody.generatedCBytes, 0);
+assert.equal(directJsonBytesBody.objectBackend.objectEmission.path, "direct-wasm");
+assert.equal(directJsonBytesBody.objectBackend.directFacts.runtime.linearMemory, true);
+assert.equal(directJsonBytesBody.objectBackend.directFacts.runtime.readonlyDataBytes, 9);
+const directJsonBytesBytes = await readFile(`${directJsonBytesOut}.wasm`);
+assert(WebAssembly.Module.imports(new WebAssembly.Module(directJsonBytesBytes)).some((entry) =>
+  entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
+));
+const directJsonBytesInstance = await instantiateJsonRuntimeWasm(directJsonBytesBytes);
+assert.equal(directJsonBytesInstance.instance.exports.main(), 0);
+
+const directJsonInlineBytesOut = `${outDir}/direct-json-inline-bytes`;
+const directJsonInlineBytesJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-inline-bytes.0", "--out", directJsonInlineBytesOut]);
+const directJsonInlineBytesBody = JSON.parse(directJsonInlineBytesJson.stdout);
+assert.equal(directJsonInlineBytesBody.generatedCBytes, 0);
+assert.equal(directJsonInlineBytesBody.objectBackend.objectEmission.path, "direct-wasm");
+assert.equal(directJsonInlineBytesBody.objectBackend.directFacts.runtime.linearMemory, true);
+assert.equal(directJsonInlineBytesBody.objectBackend.directFacts.runtime.readonlyDataBytes, 4);
+const directJsonInlineBytesBytes = await readFile(`${directJsonInlineBytesOut}.wasm`);
+assert(WebAssembly.Module.imports(new WebAssembly.Module(directJsonInlineBytesBytes)).some((entry) =>
+  entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
+));
+const directJsonInlineBytesInstance = await instantiateJsonRuntimeWasm(directJsonInlineBytesBytes);
+assert.equal(directJsonInlineBytesInstance.instance.exports.main(), 0);
+
+const directJsonDuplicateKeysOut = `${outDir}/direct-json-duplicate-keys`;
+const directJsonDuplicateKeysJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-duplicate-keys.0", "--out", directJsonDuplicateKeysOut]);
+const directJsonDuplicateKeysBody = JSON.parse(directJsonDuplicateKeysJson.stdout);
+assert.equal(directJsonDuplicateKeysBody.generatedCBytes, 0);
+assert.equal(directJsonDuplicateKeysBody.objectBackend.objectEmission.path, "direct-wasm");
+const directJsonDuplicateKeysBytes = await readFile(`${directJsonDuplicateKeysOut}.wasm`);
+const directJsonDuplicateKeysInstance = await instantiateJsonRuntimeWasm(directJsonDuplicateKeysBytes);
+assert.equal(directJsonDuplicateKeysInstance.instance.exports.main(), 0);
+
+const directJsonAllocatorCapacityOut = `${outDir}/direct-json-allocator-capacity`;
+const directJsonAllocatorCapacityJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-allocator-capacity.0", "--out", directJsonAllocatorCapacityOut]);
+const directJsonAllocatorCapacityBody = JSON.parse(directJsonAllocatorCapacityJson.stdout);
+assert.equal(directJsonAllocatorCapacityBody.generatedCBytes, 0);
+assert.equal(directJsonAllocatorCapacityBody.objectBackend.objectEmission.path, "direct-wasm");
+const directJsonAllocatorCapacityBytes = await readFile(`${directJsonAllocatorCapacityOut}.wasm`);
+const directJsonAllocatorCapacityInstance = await instantiateJsonRuntimeWasm(directJsonAllocatorCapacityBytes);
+assert.equal(directJsonAllocatorCapacityInstance.instance.exports.main(), 0);
 
 const directMutSpanLenOut = `${outDir}/direct-mutspan-len`;
 const directMutSpanLenJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "examples/direct-mutspan-len.0", "--out", directMutSpanLenOut]);
@@ -1498,7 +1585,7 @@ const explainTar002 = await execFileAsync(zero, ["explain", "--json", "TAR002"])
 const explainTar002Body = JSON.parse(explainTar002.stdout);
 assert.equal(explainTar002Body.schemaVersion, 1);
 assert.equal(explainTar002Body.code, "TAR002");
-assert.equal(explainTar002Body.repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(explainTar002Body.repair.id, "choose-target-with-required-capability");
 
 const explainText = await execFileAsync(zero, ["explain", "TYP009"]);
 assert.match(explainText.stdout, /Mutable storage required/);
@@ -1707,6 +1794,9 @@ assert.equal(linuxMuslTarget.directBackend.exeSupported, true);
 assert.equal(linuxMuslTarget.directBackend.objectEmitter, "zero-elf64");
 assert.equal(linuxMuslTarget.directBackend.exeEmitter, "zero-elf64-exe");
 assert.equal(linuxMuslTarget.directBackend.explicitDirectFallback, "never-c-bridge");
+assert.equal(linuxMuslTarget.httpRuntime.status, "unsupported");
+assert.equal(linuxMuslTarget.httpRuntime.provider, null);
+assert.match(linuxMuslTarget.httpRuntime.reason, /lacks net/i);
 assert.equal(windowsMsvcTarget.objectFormat, "coff");
 assert.equal(windowsMsvcTarget.libcFacts.mode, "sysroot");
 assert.equal(windowsMsvcTarget.libcFacts.sysrootStatus, "missing");
@@ -1722,6 +1812,11 @@ assert.equal(linuxGnuTarget.directBackend.objectEmitter, "zero-elf64");
 assert.equal(darwinArm64Target.directBackend.objectEmitter, "zero-macho64");
 assert.equal(darwinArm64Target.directBackend.exeSupported, true);
 assert.equal(darwinArm64Target.directBackend.exeEmitter, "zero-macho64-exe");
+assert.equal(darwinArm64Target.httpRuntime.provider, targetsBody.host === "darwin-arm64" ? "curl" : null);
+assert.equal(darwinArm64Target.httpRuntime.tlsVerification, targetsBody.host === "darwin-arm64");
+if (targetsBody.host === "darwin-arm64") {
+  assert.equal(darwinArm64Target.httpRuntime.customCa.env, "ZERO_HTTP_TEST_CA_BUNDLE");
+}
 assert.equal(linuxArm64Target.directBackend.status, "native-exe");
 assert.equal(linuxArm64Target.directBackend.objectEmitter, "zero-elf-aarch64");
 assert.equal(linuxArm64Target.directBackend.exeEmitter, "zero-elf-aarch64-exe");
@@ -1738,15 +1833,15 @@ assert.match(targetUnsupportedBody.diagnostics[0].expected, /Fs capability/);
 assert.match(targetUnsupportedBody.diagnostics[0].actual, /wasm32-web lacks Fs/);
 assert.match(targetUnsupportedBody.diagnostics[0].help, /remove hosted std\.fs/);
 assert.equal(targetUnsupportedBody.diagnostics[0].fixSafety, "requires-human-review");
-assert.equal(targetUnsupportedBody.diagnostics[0].repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedBody.diagnostics[0].repair.id, "choose-target-with-required-capability");
 assert.match(targetUnsupportedBody.diagnostics[0].related[0].message, /lacks Fs/);
 
 const targetUnsupportedFixPlan = await execFileAsync(zero, ["fix", "--plan", "--json", "--target", "wasm32-web", "conformance/native/fail/std-fs-target-unsupported.0"]);
 const targetUnsupportedFixPlanBody = JSON.parse(targetUnsupportedFixPlan.stdout);
-assert.equal(targetUnsupportedFixPlanBody.fixes[0].id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedFixPlanBody.fixes[0].id, "choose-target-with-required-capability");
 assert.equal(targetUnsupportedFixPlanBody.fixes[0].diagnosticCode, "TAR002");
 assert.equal(targetUnsupportedFixPlanBody.fixes[0].safety, "requires-human-review");
-assert.equal(targetUnsupportedFixPlanBody.diagnostics[0].repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedFixPlanBody.diagnostics[0].repair.id, "choose-target-with-required-capability");
 
 const targetNetUnsupportedJson = await execFileAsync(zero, ["check", "--json", "--target", "linux-musl-x64", "conformance/check/fail/target-net-unsupported.0"]).catch((error) => error);
 assert.notEqual(targetNetUnsupportedJson.code, 0);
@@ -2100,6 +2195,7 @@ pub fun main() -> Void {
 
 const helloRunArgs = runnableExeArgs("conformance/run/pass/hello.0", `${outDir}/hello`);
 if (helloRunArgs) {
+  await rm(`${outDir}/hello`, { force: true });
   await execFileAsync(zero, helloRunArgs);
   const run = await execFileAsync(`${outDir}/hello`, []);
   assert.match(run.stdout, /hello conformance/);
@@ -2307,6 +2403,22 @@ assert.match(unknownEnumCase.stderr, /VAR001/);
 const badStdCall = await execFileAsync(zero, ["check", "conformance/native/fail/bad-std-call.0"]).catch((error) => error);
 assert.notEqual(badStdCall.code, 0);
 assert.match(badStdCall.stderr, /STD002/);
+
+const stdHttpErrorRawInt = await execFileAsync(zero, ["check", "conformance/native/fail/std-http-error-raw-int.0"]).catch((error) => error);
+assert.notEqual(stdHttpErrorRawInt.code, 0);
+assert.match(stdHttpErrorRawInt.stderr, /TYP002/);
+
+const stdHttpFetchRawTimeout = await execFileAsync(zero, ["check", "conformance/native/fail/std-http-fetch-raw-timeout.0"]).catch((error) => error);
+assert.notEqual(stdHttpFetchRawTimeout.code, 0);
+assert.match(stdHttpFetchRawTimeout.stderr, /STD003/);
+
+const stdJsonParseBytesRawAlloc = await execFileAsync(zero, ["check", "conformance/native/fail/std-json-parsebytes-raw-alloc.0"]).catch((error) => error);
+assert.notEqual(stdJsonParseBytesRawAlloc.code, 0);
+assert.match(stdJsonParseBytesRawAlloc.stderr, /STD003/);
+
+const stdJsonParseBytesImmutableAlloc = await execFileAsync(zero, ["check", "conformance/native/fail/std-json-parsebytes-immutable-alloc.0"]).catch((error) => error);
+assert.notEqual(stdJsonParseBytesImmutableAlloc.code, 0);
+assert.match(stdJsonParseBytesImmutableAlloc.stderr, /STD003/);
 
 const genericMemLenNonSpan = await execFileAsync(zero, ["check", "conformance/native/fail/generic-mem-len-non-span.0"]).catch((error) => error);
 assert.notEqual(genericMemLenNonSpan.code, 0);

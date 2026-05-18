@@ -12,7 +12,7 @@ pub fun main(world: World) -> Void raises {
         listener.has == false &&
         std.mem.eql(std.net.dnsName(addr), "localhost") &&
         getA == getB &&
-        std.http.bodyLen(std.mem.span("body")) == 4 &&
+        std.mem.len(std.mem.span("body")) == 4 &&
         std.mem.eql(std.http.tlsBoundary(), "platform-or-c-library") {
         check world.out.write("std net http breadth ok\n")
     }

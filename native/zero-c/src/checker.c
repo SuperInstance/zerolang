@@ -842,6 +842,22 @@ static bool is_world_stream_write_call(const Expr *expr, Scope *scope) {
   return expr && expr->kind == EXPR_CALL && is_world_stream_write_callee(expr->left, scope);
 }
 
+static int std_http_error_code(const char *name) {
+  if (!name) return -1;
+  if (strcmp(name, "std.http.errorNone") == 0) return 0;
+  if (strcmp(name, "std.http.errorInvalidUrl") == 0) return 1;
+  if (strcmp(name, "std.http.errorUnsupportedProtocol") == 0) return 2;
+  if (strcmp(name, "std.http.errorDns") == 0) return 3;
+  if (strcmp(name, "std.http.errorConnect") == 0) return 4;
+  if (strcmp(name, "std.http.errorTls") == 0) return 5;
+  if (strcmp(name, "std.http.errorTimeout") == 0) return 6;
+  if (strcmp(name, "std.http.errorTooLarge") == 0) return 7;
+  if (strcmp(name, "std.http.errorProviderUnavailable") == 0) return 8;
+  if (strcmp(name, "std.http.errorIo") == 0) return 9;
+  if (strcmp(name, "std.http.errorInvalidRequest") == 0) return 10;
+  return -1;
+}
+
 static const char *std_call_return_type(const Expr *callee) {
   ZBuf name;
   zbuf_init(&name);
@@ -909,8 +925,11 @@ static const char *std_call_return_type(const Expr *callee) {
   else if (strcmp(name.data, "std.parse.parseU16") == 0) result = "Maybe<u16>";
   else if (strcmp(name.data, "std.parse.parseU32") == 0) result = "Maybe<u32>";
   else if (strcmp(name.data, "std.json.validate") == 0) result = "Bool";
+  else if (strcmp(name.data, "std.json.validateBytes") == 0) result = "Bool";
   else if (strcmp(name.data, "std.json.parse") == 0) result = "Maybe<JsonDoc>";
+  else if (strcmp(name.data, "std.json.parseBytes") == 0) result = "Maybe<JsonDoc>";
   else if (strcmp(name.data, "std.json.streamTokens") == 0) result = "usize";
+  else if (strcmp(name.data, "std.json.streamTokensBytes") == 0) result = "usize";
   else if (strcmp(name.data, "std.json.writeString") == 0) result = "Maybe<String>";
   else if (strcmp(name.data, "std.json.decodeBoundary") == 0) result = "String";
   else if (strcmp(name.data, "std.time.ms") == 0) result = "Duration";
@@ -941,7 +960,19 @@ static const char *std_call_return_type(const Expr *callee) {
   else if (strcmp(name.data, "std.http.parseMethod") == 0) result = "HttpMethod";
   else if (strcmp(name.data, "std.http.client") == 0) result = "HttpClient";
   else if (strcmp(name.data, "std.http.server") == 0) result = "HttpServer";
-  else if (strcmp(name.data, "std.http.bodyLen") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.fetch") == 0) result = "HttpResult";
+  else if (strcmp(name.data, "std.http.resultOk") == 0) result = "Bool";
+  else if (strcmp(name.data, "std.http.resultStatus") == 0) result = "u16";
+  else if (strcmp(name.data, "std.http.resultBodyLen") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.resultError") == 0) result = "HttpError";
+  else if (std_http_error_code(name.data) >= 0) result = "HttpError";
+  else if (strcmp(name.data, "std.http.responseLen") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.responseHeadersLen") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.responseBodyOffset") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.headerValue") == 0) result = "HttpHeaderValue";
+  else if (strcmp(name.data, "std.http.headerFound") == 0) result = "Bool";
+  else if (strcmp(name.data, "std.http.headerOffset") == 0) result = "usize";
+  else if (strcmp(name.data, "std.http.headerLen") == 0) result = "usize";
   else if (strcmp(name.data, "std.http.tlsBoundary") == 0) result = "String";
   else if (strcmp(name.data, "std.args.len") == 0) result = "usize";
   else if (strcmp(name.data, "std.args.get") == 0) result = "Maybe<String>";
@@ -1040,8 +1071,11 @@ static int std_call_arg_count(const char *name) {
   if (strcmp(name, "std.parse.parseU16") == 0) return 1;
   if (strcmp(name, "std.parse.parseU32") == 0) return 1;
   if (strcmp(name, "std.json.validate") == 0) return 1;
+  if (strcmp(name, "std.json.validateBytes") == 0) return 1;
   if (strcmp(name, "std.json.parse") == 0) return 2;
+  if (strcmp(name, "std.json.parseBytes") == 0) return 2;
   if (strcmp(name, "std.json.streamTokens") == 0) return 1;
+  if (strcmp(name, "std.json.streamTokensBytes") == 0) return 1;
   if (strcmp(name, "std.json.writeString") == 0) return 2;
   if (strcmp(name, "std.json.decodeBoundary") == 0) return 0;
   if (strcmp(name, "std.time.ms") == 0) return 1;
@@ -1072,7 +1106,19 @@ static int std_call_arg_count(const char *name) {
   if (strcmp(name, "std.http.parseMethod") == 0) return 1;
   if (strcmp(name, "std.http.client") == 0) return 1;
   if (strcmp(name, "std.http.server") == 0) return 2;
-  if (strcmp(name, "std.http.bodyLen") == 0) return 1;
+  if (strcmp(name, "std.http.fetch") == 0) return 4;
+  if (strcmp(name, "std.http.resultOk") == 0) return 1;
+  if (strcmp(name, "std.http.resultStatus") == 0) return 1;
+  if (strcmp(name, "std.http.resultBodyLen") == 0) return 1;
+  if (strcmp(name, "std.http.resultError") == 0) return 1;
+  if (std_http_error_code(name) >= 0) return 0;
+  if (strcmp(name, "std.http.responseLen") == 0) return 1;
+  if (strcmp(name, "std.http.responseHeadersLen") == 0) return 1;
+  if (strcmp(name, "std.http.responseBodyOffset") == 0) return 1;
+  if (strcmp(name, "std.http.headerValue") == 0) return 2;
+  if (strcmp(name, "std.http.headerFound") == 0) return 1;
+  if (strcmp(name, "std.http.headerOffset") == 0) return 1;
+  if (strcmp(name, "std.http.headerLen") == 0) return 1;
   if (strcmp(name, "std.http.tlsBoundary") == 0) return 0;
   if (strcmp(name, "std.args.len") == 0) return 0;
   if (strcmp(name, "std.args.get") == 0) return 1;
@@ -1163,8 +1209,11 @@ static const char *std_call_arg_type(const char *name, size_t index) {
   if (strcmp(name, "std.parse.parseU16") == 0) return "String";
   if (strcmp(name, "std.parse.parseU32") == 0) return "String";
   if (strcmp(name, "std.json.validate") == 0) return "String";
+  if (strcmp(name, "std.json.validateBytes") == 0) return "Span<u8>";
   if (strcmp(name, "std.json.parse") == 0) return index == 1 ? "String" : NULL;
+  if (strcmp(name, "std.json.parseBytes") == 0) return index == 1 ? "Span<u8>" : NULL;
   if (strcmp(name, "std.json.streamTokens") == 0) return "String";
+  if (strcmp(name, "std.json.streamTokensBytes") == 0) return "Span<u8>";
   if (strcmp(name, "std.json.writeString") == 0) return index == 0 ? "MutSpan<u8>" : "String";
   if (strcmp(name, "std.time.ms") == 0) return "i32";
   if (strcmp(name, "std.time.seconds") == 0) return "i32";
@@ -1189,7 +1238,23 @@ static const char *std_call_arg_type(const char *name, size_t index) {
   if (strcmp(name, "std.http.parseMethod") == 0) return "String";
   if (strcmp(name, "std.http.client") == 0) return "Net";
   if (strcmp(name, "std.http.server") == 0) return index == 0 ? "Net" : "Address";
-  if (strcmp(name, "std.http.bodyLen") == 0) return "Span<u8>";
+  if (strcmp(name, "std.http.fetch") == 0) {
+    if (index == 0) return "HttpClient";
+    if (index == 1) return "Span<u8>";
+    if (index == 2) return "MutSpan<u8>";
+    return "Duration";
+  }
+  if (strcmp(name, "std.http.resultOk") == 0 ||
+      strcmp(name, "std.http.resultStatus") == 0 ||
+      strcmp(name, "std.http.resultBodyLen") == 0 ||
+      strcmp(name, "std.http.resultError") == 0) return "HttpResult";
+  if (strcmp(name, "std.http.responseLen") == 0 ||
+      strcmp(name, "std.http.responseHeadersLen") == 0 ||
+      strcmp(name, "std.http.responseBodyOffset") == 0) return "Span<u8>";
+  if (strcmp(name, "std.http.headerValue") == 0) return "Span<u8>";
+  if (strcmp(name, "std.http.headerFound") == 0 ||
+      strcmp(name, "std.http.headerOffset") == 0 ||
+      strcmp(name, "std.http.headerLen") == 0) return "HttpHeaderValue";
   if (strcmp(name, "std.args.get") == 0) return "usize";
   if (strcmp(name, "std.env.get") == 0) return "String";
   if (strcmp(name, "std.fs.open") == 0) return index == 0 ? "Fs" : "String";
@@ -4857,6 +4922,41 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
             zbuf_free(&std_name);
             return true;
           }
+          if (strcmp(std_name.data, "std.json.parse") == 0 || strcmp(std_name.data, "std.json.parseBytes") == 0) {
+            if (!check_expr(program, expr->args.items[0], scope, diag)) {
+              zbuf_free(&std_name);
+              return false;
+            }
+            const char *alloc_type = expr_type(program, expr->args.items[0], scope);
+            if (!is_allocator_type(alloc_type)) {
+              char message[256];
+              snprintf(message, sizeof(message), "%s expects an allocator primitive", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[0]->line, expr->args.items[0]->column, "NullAlloc or mutable FixedBufAlloc", alloc_type, "pass an explicit allocator; JSON parsing does not use a global allocator");
+            }
+            if (strcmp(alloc_type, "FixedBufAlloc") == 0 &&
+                (expr->args.items[0]->kind != EXPR_IDENT || !scope_is_mutable(scope, expr->args.items[0]->text))) {
+              char message[256];
+              snprintf(message, sizeof(message), "%s requires a mutable FixedBufAlloc binding", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[0]->line, expr->args.items[0]->column, "let mut allocator: FixedBufAlloc", "immutable or temporary FixedBufAlloc", "store the fixed buffer allocator in a let mut binding before parsing JSON");
+            }
+            const char *expected = strcmp(std_name.data, "std.json.parseBytes") == 0 ? "Span<u8>" : "String";
+            if (!check_expr_expected(program, expr->args.items[1], scope, diag, expected)) {
+              zbuf_free(&std_name);
+              return false;
+            }
+            const char *actual = expr_type(program, expr->args.items[1], scope);
+            if (!types_compatible(expected, actual)) {
+              char message[256];
+              snprintf(message, sizeof(message), "argument 2 to '%s' has incompatible type", std_name.data);
+              zbuf_free(&std_name);
+              return set_diag_detail(diag, 3012, message, expr->args.items[1]->line, expr->args.items[1]->column, expected, actual, "pass a compatible JSON payload");
+            }
+            set_expr_resolved_type(expr, "Maybe<JsonDoc>");
+            zbuf_free(&std_name);
+            return true;
+          }
           for (size_t i = 0; i < expr->args.len; i++) {
             const char *expected = std_call_arg_type(std_name.data, i);
             if (!check_expr_expected(program, expr->args.items[i], scope, diag, expected)) {
@@ -4869,7 +4969,10 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
               if (scope_actual) actual = scope_actual;
             }
             bool span_array_arg = false;
-            if (expected && actual && actual[0] == '[' && (type_is_named_generic(expected, "Span") || type_is_named_generic(expected, "MutSpan"))) {
+            bool expected_span = expected && type_is_named_generic(expected, "Span");
+            bool expected_mut_span = expected && type_is_named_generic(expected, "MutSpan");
+            bool inline_array_literal = expr->args.items[i] && expr->args.items[i]->kind == EXPR_ARRAY_LITERAL;
+            if (expected && actual && actual[0] == '[' && (expected_span || (expected_mut_span && !inline_array_literal))) {
               char expected_element[128];
               char actual_element[128];
               if (span_element_text(expected, expected_element, sizeof(expected_element)) &&
@@ -5102,21 +5205,38 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
     case EXPR_ARRAY_LITERAL: {
       const char *element_expected = NULL;
       char expected_len_text[64] = {0};
+      char actual_len_text[64] = {0};
       char inferred_type[160];
       char inferred_element_type[160] = {0};
+      if (expr->array_repeat) {
+        if (expr->args.len != 2) {
+          return set_diag_detail(diag, 3006, "array repeat literal requires a value and count", expr->line, expr->column, "[value; count]", "array literal", "write a repeated fixed-array literal such as [0_u8; 16]");
+        }
+        const Expr *count = expr->args.items[1];
+        if (!count || (count->kind != EXPR_NUMBER && count->kind != EXPR_IDENT)) {
+          return set_diag_detail(diag, 3006, "array repeat count must be a compile-time integer", count ? count->line : expr->line, count ? count->column : expr->column, "integer literal or static const", count ? "non-integer expression" : "missing count", "use a literal count such as [0_u8; 16]");
+        }
+        char *actual_static = canonical_static_arg(program, count->text);
+        if (!actual_static) {
+          return set_diag_detail(diag, 3006, "array repeat count must be a compile-time integer", count->line, count->column, "integer literal or static const", count->text ? count->text : "<unknown>", "use a literal count or a top-level integer const");
+        }
+        snprintf(actual_len_text, sizeof(actual_len_text), "%s", actual_static);
+        free(actual_static);
+      } else {
+        snprintf(actual_len_text, sizeof(actual_len_text), "%zu", expr->args.len);
+      }
       if (expected && expected[0] == '[') {
         const char *close = strchr(expected, ']');
         if (close && close[1]) {
           snprintf(expected_len_text, sizeof(expected_len_text), "%.*s", (int)(close - expected - 1), expected + 1);
           char *expected_static = canonical_static_arg(program, expected_len_text);
-          char actual_len_text[64];
-          snprintf(actual_len_text, sizeof(actual_len_text), "%zu", expr->args.len);
           bool length_ok = false;
           if (expected_static) length_ok = strcmp(expected_static, actual_len_text) == 0;
           else length_ok = strcmp(expected_len_text, actual_len_text) == 0;
           if (!length_ok) {
             char actual_detail[128];
-            snprintf(actual_detail, sizeof(actual_detail), "%zu element(s)", expr->args.len);
+            if (expr->array_repeat) snprintf(actual_detail, sizeof(actual_detail), "repeat count %s", actual_len_text);
+            else snprintf(actual_detail, sizeof(actual_detail), "%zu element(s)", expr->args.len);
             bool ok = set_diag_detail(diag, 3006, "array literal length does not match expected fixed array", expr->line, expr->column, expected, actual_detail, "add or remove elements so the array literal length matches its fixed-array type");
             free(expected_static);
             return ok;
@@ -5125,7 +5245,8 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
           element_expected = close + 1;
         }
       }
-      for (size_t i = 0; i < expr->args.len; i++) {
+      size_t element_count = expr->array_repeat ? 1 : expr->args.len;
+      for (size_t i = 0; i < element_count; i++) {
         if (!check_expr_expected(program, expr->args.items[i], scope, diag, element_expected)) return false;
         if (element_expected) {
           const char *actual = expr_type(program, expr->args.items[i], scope);
@@ -5147,6 +5268,9 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
       }
       if (expected && expected[0] == '[') {
         set_expr_resolved_type(expr, expected);
+      } else if (expr->array_repeat && expr->args.len == 2) {
+        snprintf(inferred_type, sizeof(inferred_type), "[%s]%s", actual_len_text, expr_type(program, expr->args.items[0], scope));
+        set_expr_resolved_type(expr, inferred_type);
       } else if (expr->args.len > 0) {
         snprintf(inferred_type, sizeof(inferred_type), "[%zu]%s", expr->args.len, expr_type(program, expr->args.items[0], scope));
         set_expr_resolved_type(expr, inferred_type);
@@ -5830,7 +5954,8 @@ static bool expr_reference_provenance(const Program *program, const Expr *expr, 
   }
   if (expr->kind == EXPR_ARRAY_LITERAL) {
     bool added = false;
-    for (size_t i = 0; i < expr->args.len; i++) {
+    size_t element_count = expr->array_repeat ? (expr->args.len > 0 ? 1 : 0) : expr->args.len;
+    for (size_t i = 0; i < element_count; i++) {
       ValueProvenance item_origins = {0};
       if (expr_reference_provenance(program, expr->args.items[i], scope, &item_origins)) {
         char element_path[40];
@@ -7251,7 +7376,7 @@ static bool is_builtin_type_name(const char *name) {
     "Void", "Bool", "bool", "String", "char", "Type",
     "World", "WorldStream", "Fs", "File", "ByteBuf", "NullAlloc", "FixedBufAlloc", "PageAlloc", "GeneralAlloc",
     "Vec", "Map", "Set", "Duration", "RandSource", "ProcStatus", "Address", "Net", "Conn", "Listener",
-    "HttpMethod", "HttpClient", "HttpServer", "JsonDoc", "BufferedReader", "BufferedWriter",
+    "HttpMethod", "HttpClient", "HttpServer", "HttpResult", "HttpError", "HttpHeaderValue", "JsonDoc", "BufferedReader", "BufferedWriter",
     "Request", "Response", "Env", "Args", "Clock", "Rand", "Proc", "Alloc",
     "Maybe", "Span", "MutSpan", "ref", "mutref", "owned",
     NULL

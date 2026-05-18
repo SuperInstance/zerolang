@@ -15,13 +15,13 @@ Runnable modules:
 - `std.path`: fixed-buffer path joining.
 - `std.parse`: allocation-free ASCII scanners and unsigned integer parsers.
 - `std.codec`: byte-oriented integer encoding, varint length, and CRC-32 helpers.
-- `std.json`: validation, streaming token counts, explicit-allocator parsing, and caller-buffer string writing.
+- `std.json`: string and byte-span validation, streaming token counts, explicit-allocator parsing, and caller-buffer string writing.
 - `std.time`: duration math plus target-gated monotonic and wall-clock helpers.
 - `std.rand`: explicit deterministic random sources and target entropy helpers.
 - `std.proc`: host process status helpers behind the process capability.
 - `std.crypto`: small hash, keyed hash, constant-time equality, and entropy helpers.
 - `std.net`: network capability metadata and bootstrap connection/listener handles.
-- `std.http`: HTTP method, body-length, client/server metadata, and TLS-boundary helpers.
+- `std.http`: HTTP method, body-length, client/server metadata, TLS-boundary helpers, hosted GET conveniences, raw request-envelope helpers, raw response-header capture, and header-value lookup.
 
 Each module page documents target support, allocation behavior, error behavior,
 ownership notes, and runnable examples.

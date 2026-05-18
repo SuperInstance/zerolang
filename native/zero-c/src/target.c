@@ -440,6 +440,33 @@ static void append_target_direct_backend_json(ZBuf *buf, const ZTargetInfo *targ
   );
 }
 
+static bool target_http_runtime_supported(const ZTargetInfo *target) {
+  const char *object_emitter = z_direct_object_emitter(target);
+  return target &&
+         z_target_is_host(target) &&
+         z_target_has_capability(target, "net") &&
+         (strcmp(object_emitter, "zero-macho64") == 0 || strcmp(object_emitter, "zero-elf64") == 0) &&
+         strcmp(z_direct_exe_emitter(target), "none") != 0 &&
+         ((target->os && strcmp(target->os, "macos") == 0) ||
+          (target->os && strcmp(target->os, "linux") == 0));
+}
+
+void z_append_http_runtime_json(ZBuf *buf, const ZTargetInfo *target) {
+  if (target_http_runtime_supported(target)) {
+    zbuf_append(buf, "{\"status\":\"supported\",\"provider\":\"curl\",\"providerLink\":\"system-library\",\"tlsBoundary\":\"platform-or-c-library\",\"caSource\":\"provider-default\",\"tlsVerification\":true,\"customCa\":{\"supported\":true,\"mode\":\"test-harness\",\"env\":\"ZERO_HTTP_TEST_CA_BUNDLE\"},\"insecureMode\":false,\"protocols\":[\"http\",\"https\"],\"staticLibraries\":[\"zero_runtime.o\",\"zero_http_curl.o\"],\"systemLibraries\":[\"curl\"],\"reason\":\"host direct runtime link plan uses libcurl with verification enabled\"}");
+    return;
+  }
+  const char *reason = "target has no audited HTTP runtime provider";
+  if (target && !z_target_has_capability(target, "net")) reason = "target lacks net capability";
+  else if (target && !z_target_is_host(target)) reason = "HTTP runtime provider is host-only today";
+  else if (target && strcmp(z_direct_object_emitter(target), "zero-macho64") != 0 && strcmp(z_direct_object_emitter(target), "zero-elf64") != 0) reason = "target lacks host runtime relocation support";
+  zbuf_appendf(
+    buf,
+    "{\"status\":\"unsupported\",\"provider\":null,\"providerLink\":\"none\",\"tlsBoundary\":\"none\",\"caSource\":\"none\",\"tlsVerification\":false,\"customCa\":{\"supported\":false,\"mode\":\"none\",\"env\":\"\"},\"insecureMode\":false,\"protocols\":[],\"staticLibraries\":[],\"systemLibraries\":[],\"reason\":\"%s\"}",
+    reason
+  );
+}
+
 static void append_target_libc_json(ZBuf *buf, const ZTargetInfo *target) {
   zbuf_appendf(
     buf,
@@ -488,6 +515,8 @@ void z_append_targets_json(ZBuf *buf) {
     append_target_libc_json(buf, &targets[i]);
     zbuf_append(buf, ", \"directBackend\": ");
     append_target_direct_backend_json(buf, &targets[i]);
+    zbuf_append(buf, ", \"httpRuntime\": ");
+    z_append_http_runtime_json(buf, &targets[i]);
     zbuf_appendf(buf, "}%s\n", i + 1 < target_count ? "," : "");
   }
   zbuf_append(buf, "  ]\n}\n");

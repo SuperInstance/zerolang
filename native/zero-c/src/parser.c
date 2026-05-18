@@ -424,10 +424,18 @@ static Expr *parse_primary(Parser *parser) {
   if (match(parser, "[")) {
     Expr *expr = new_expr(EXPR_ARRAY_LITERAL, token);
     if (!match(parser, "]")) {
-      do {
-        Expr *item = parse_expr(parser);
-        if (item) push_expr(&expr->args, item);
-      } while (match(parser, ","));
+      Expr *first = parse_expr(parser);
+      if (first) push_expr(&expr->args, first);
+      if (match(parser, ";")) {
+        expr->array_repeat = true;
+        Expr *count = parse_expr(parser);
+        if (count) push_expr(&expr->args, count);
+      } else {
+        while (match(parser, ",")) {
+          Expr *item = parse_expr(parser);
+          if (item) push_expr(&expr->args, item);
+        }
+      }
       expect(parser, "]", "expected ']' after array literal");
     }
     return expr;

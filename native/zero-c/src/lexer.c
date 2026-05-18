@@ -204,7 +204,7 @@ TokenVec z_tokenize(const char *source, ZDiag *diag) {
       continue;
     }
 
-    if (strchr("(){}[],.:<>=+-*/%!&", ch)) {
+    if (strchr("(){}[],.;:<>=+-*/%!&", ch)) {
       push_token(&tokens, make_token(TOK_SYMBOL, z_strndup(source + offset, 1), start_line, start_column, start, 1));
       offset++;
       column++;

@@ -41,7 +41,7 @@ shape SliceView {
 pub fun main(world: World) -> Void raises {
     let bytes: Span<u8> = std.mem.span("zero-memory")
     let same = std.mem.span("zero-memory")
-    let mut scratch: [11]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut scratch: [11]u8 = [0_u8; 11]
     let copied = std.mem.copy(scratch, bytes)
     let mut ints: [3]i32 = [1, 2, 3]
     let intSpan: MutSpan<i32> = ints

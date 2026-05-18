@@ -203,6 +203,7 @@ typedef struct {
   bool has_allocator;
   bool has_fallibility;
   unsigned imported_function_count;
+  unsigned zero_json_parse_bytes_import_index;
   unsigned fd_write_import_index;
   unsigned fd_read_import_index;
   unsigned fd_close_import_index;
@@ -232,6 +233,7 @@ typedef struct {
   unsigned byte_cmp_result_local_index;
   unsigned byte_mut_len_local_index;
   unsigned byte_mut_i_local_index;
+  unsigned json_result_local_index;
   unsigned alloc_len_local_index;
   unsigned alloc_next_local_index;
   unsigned error_result_local_index;
@@ -246,6 +248,7 @@ typedef struct {
 } WasmEmitContext;
 
 typedef struct {
+  bool zero_json_parse_bytes;
   bool fd_write;
   bool fd_read;
   bool fd_close;
@@ -264,6 +267,7 @@ typedef struct {
   bool path_rename;
   unsigned function_count;
   unsigned type_count;
+  unsigned zero_json_parse_bytes_function_index;
   unsigned fd_write_function_index;
   unsigned fd_read_function_index;
   unsigned fd_close_function_index;
@@ -280,6 +284,7 @@ typedef struct {
   unsigned path_remove_directory_function_index;
   unsigned path_unlink_file_function_index;
   unsigned path_rename_function_index;
+  unsigned zero_json_parse_bytes_type_index;
   unsigned fd_write_type_index;
   unsigned fd_read_type_index;
   unsigned fd_close_type_index;
@@ -352,6 +357,9 @@ static bool wasm_value_uses_byte_view(const IrValue *value) {
       value->kind == IR_VALUE_BYTE_VIEW_LEN ||
       value->kind == IR_VALUE_BYTE_VIEW_INDEX_LOAD ||
       value->kind == IR_VALUE_CRC32_BYTES ||
+      value->kind == IR_VALUE_JSON_PARSE_BYTES ||
+      value->kind == IR_VALUE_JSON_VALIDATE_BYTES ||
+      value->kind == IR_VALUE_JSON_STREAM_TOKENS_BYTES ||
       value->kind == IR_VALUE_FIXED_BUF_ALLOC ||
       value->kind == IR_VALUE_MAYBE_VALUE) {
     return true;
@@ -363,6 +371,24 @@ static bool wasm_value_uses_byte_view(const IrValue *value) {
   }
   for (size_t i = 0; i < value->arg_len; i++) {
     if (wasm_value_uses_byte_view(value->args[i])) return true;
+  }
+  return false;
+}
+
+static bool wasm_value_uses_json_parse_bytes(const IrValue *value) {
+  if (!value) return false;
+  if (value->kind == IR_VALUE_JSON_PARSE_BYTES ||
+      value->kind == IR_VALUE_JSON_VALIDATE_BYTES ||
+      value->kind == IR_VALUE_JSON_STREAM_TOKENS_BYTES) {
+    return true;
+  }
+  if (wasm_value_uses_json_parse_bytes(value->index) ||
+      wasm_value_uses_json_parse_bytes(value->left) ||
+      wasm_value_uses_json_parse_bytes(value->right)) {
+    return true;
+  }
+  for (size_t i = 0; i < value->arg_len; i++) {
+    if (wasm_value_uses_json_parse_bytes(value->args[i])) return true;
   }
   return false;
 }
@@ -412,6 +438,7 @@ static bool wasm_value_uses_memory_peek(const IrValue *value) {
 static bool wasm_value_uses_allocator(const IrValue *value) {
   if (!value) return false;
   if (value->kind == IR_VALUE_FIXED_BUF_ALLOC || value->kind == IR_VALUE_ALLOC_BYTES ||
+      value->kind == IR_VALUE_JSON_PARSE_BYTES ||
       value->kind == IR_VALUE_MAYBE_HAS || value->kind == IR_VALUE_MAYBE_VALUE ||
       value->kind == IR_VALUE_ARGS_GET || value->kind == IR_VALUE_ENV_GET ||
       value->kind == IR_VALUE_FS_READ_ALL) {
@@ -672,6 +699,19 @@ static bool wasm_instrs_use_byte_compare(const IrInstr *instrs, size_t len) {
   return false;
 }
 
+static bool wasm_instrs_use_json_parse_bytes(const IrInstr *instrs, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    const IrInstr *instr = &instrs[i];
+    if (wasm_value_uses_json_parse_bytes(instr->value) ||
+        wasm_value_uses_json_parse_bytes(instr->index) ||
+        wasm_instrs_use_json_parse_bytes(instr->then_instrs, instr->then_len) ||
+        wasm_instrs_use_json_parse_bytes(instr->else_instrs, instr->else_len)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool wasm_instrs_use_wasi_clock(const IrInstr *instrs, size_t len) {
   for (size_t i = 0; i < len; i++) {
     const IrInstr *instr = &instrs[i];
@@ -838,6 +878,10 @@ static bool wasm_function_uses_byte_compare(const IrFunction *fun) {
 
 static bool wasm_function_uses_byte_mutation(const IrFunction *fun) {
   return fun && wasm_instrs_use_byte_mutation(fun->instrs, fun->instr_len);
+}
+
+static bool wasm_function_uses_json_parse_bytes(const IrFunction *fun) {
+  return fun && wasm_instrs_use_json_parse_bytes(fun->instrs, fun->instr_len);
 }
 
 static bool wasm_function_uses_memory_peek(const IrFunction *fun) {
@@ -1052,6 +1096,17 @@ static bool wasm_emit_byte_view_ptr(ZBuf *code, const IrValue *view, const WasmE
     return true;
   }
   return wasm_diag(diag, "direct wasm value is not a byte view", view->line, view->column, "non-byte-view value");
+}
+
+static bool wasm_emit_json_parse_bytes_call(ZBuf *code, const IrValue *value, const WasmEmitContext *ctx, ZDiag *diag) {
+  if (!ctx || ctx->zero_json_parse_bytes_import_index == (unsigned)-1) {
+    return wasm_diag(diag, "direct wasm JSON bytes helper requires a runtime import", value ? value->line : 1, value ? value->column : 1, "missing zero_json_parse_bytes import");
+  }
+  if (!value || !value->left) return wasm_diag(diag, "direct wasm JSON bytes helper requires a byte span", value ? value->line : 1, value ? value->column : 1, "missing byte span");
+  if (!wasm_emit_byte_view_ptr(code, value->left, ctx, diag)) return false;
+  if (!wasm_emit_byte_view_len(code, value->left, ctx, diag)) return false;
+  wasm_emit_call_index(code, ctx->zero_json_parse_bytes_import_index);
+  return true;
 }
 
 static bool wasm_emit_byte_view_eq(ZBuf *code, const IrValue *value, const WasmEmitContext *ctx, ZDiag *diag) {
@@ -2493,6 +2548,30 @@ static bool wasm_emit_value(ZBuf *code, const IrValue *value, const WasmEmitCont
       wasm_append_byte(code, 0x10);
       wasm_append_u32_leb(code, value->callee_index + (ctx ? ctx->imported_function_count : 0));
       return true;
+    case IR_VALUE_JSON_PARSE_BYTES:
+      return wasm_emit_json_parse_bytes_call(code, value, ctx, diag);
+    case IR_VALUE_JSON_VALIDATE_BYTES:
+      if (!wasm_emit_json_parse_bytes_call(code, value, ctx, diag)) return false;
+      wasm_emit_i64_const(code, 0);
+      wasm_append_byte(code, 0x59);
+      return true;
+    case IR_VALUE_JSON_STREAM_TOKENS_BYTES:
+      if (!ctx || ctx->json_result_local_index == (unsigned)-1) {
+        return wasm_diag(diag, "direct wasm JSON token streaming requires a scratch local", value->line, value->column, "missing JSON scratch local");
+      }
+      if (!wasm_emit_json_parse_bytes_call(code, value, ctx, diag)) return false;
+      wasm_emit_local_set(code, ctx->json_result_local_index);
+      wasm_emit_local_get(code, ctx->json_result_local_index);
+      wasm_emit_i64_const(code, 0);
+      wasm_append_byte(code, 0x59);
+      wasm_append_byte(code, 0x04);
+      wasm_append_byte(code, 0x7f);
+      wasm_emit_local_get(code, ctx->json_result_local_index);
+      wasm_append_byte(code, 0xa7);
+      wasm_append_byte(code, 0x05);
+      wasm_emit_i32_const(code, 0);
+      wasm_append_byte(code, 0x0b);
+      return true;
     case IR_VALUE_CHECK:
       return wasm_emit_check_value(code, value, ctx, diag);
     case IR_VALUE_RESCUE:
@@ -3213,6 +3292,49 @@ static bool wasm_emit_instr(ZBuf *body, const IrInstr *instr, const WasmEmitCont
         wasm_emit_local_set(body, local_base + 1);
         return true;
       }
+      if (instr->value->kind == IR_VALUE_JSON_PARSE_BYTES) {
+        if (!ctx || ctx->json_result_local_index == (unsigned)-1) {
+          return wasm_diag(diag, "direct wasm JSON parse result requires a scratch local", instr->line, instr->column, "missing JSON scratch local");
+        }
+        if (!ctx->has_allocator || instr->value->local_index >= ctx->fun->local_len || ctx->fun->locals[instr->value->local_index].type != IR_TYPE_ALLOC) {
+          return wasm_diag(diag, "direct wasm JSON parse allocator is invalid", instr->line, instr->column, "invalid allocator");
+        }
+        unsigned alloc_base = wasm_local_index(ctx->fun, instr->value->local_index);
+        if (!wasm_emit_value(body, instr->value, ctx, diag)) return false;
+        wasm_emit_local_set(body, ctx->json_result_local_index);
+        wasm_emit_local_get(body, ctx->json_result_local_index);
+        wasm_emit_i64_const(body, 0);
+        wasm_append_byte(body, 0x53);
+        wasm_append_byte(body, 0x04);
+        wasm_append_byte(body, 0x40);
+        wasm_emit_maybe_scalar_clear(body, local_base);
+        wasm_append_byte(body, 0x05);
+
+        wasm_emit_local_get(body, alloc_base + 2);
+        wasm_emit_local_get(body, ctx->json_result_local_index);
+        wasm_append_byte(body, 0xa7);
+        wasm_append_byte(body, 0x6a);
+        wasm_emit_local_set(body, ctx->alloc_next_local_index);
+
+        wasm_emit_local_get(body, ctx->alloc_next_local_index);
+        wasm_emit_local_get(body, alloc_base + 1);
+        wasm_append_byte(body, 0x4b);
+        wasm_append_byte(body, 0x04);
+        wasm_append_byte(body, 0x40);
+        wasm_emit_maybe_scalar_clear(body, local_base);
+        wasm_append_byte(body, 0x05);
+
+        wasm_emit_i32_const(body, 1);
+        wasm_emit_local_set(body, local_base);
+        wasm_emit_local_get(body, ctx->json_result_local_index);
+        wasm_append_byte(body, 0xa7);
+        wasm_emit_local_set(body, local_base + 1);
+        wasm_emit_local_get(body, ctx->alloc_next_local_index);
+        wasm_emit_local_set(body, alloc_base + 2);
+        wasm_append_byte(body, 0x0b);
+        wasm_append_byte(body, 0x0b);
+        return true;
+      }
       if (!wasm_emit_value(body, instr->value, ctx, diag)) return false;
       wasm_emit_local_set(body, ctx->fs_result_local_index);
       wasm_emit_local_get(body, ctx->fs_result_local_index);
@@ -3345,6 +3467,7 @@ static bool wasm_emit_function_body(ZBuf *body, const IrProgram *ir, const IrFun
   bool has_byte_views = wasm_function_uses_byte_views(fun);
   bool has_byte_compare = wasm_function_uses_byte_compare(fun);
   bool has_byte_mutation = wasm_function_uses_byte_mutation(fun);
+  bool has_json_parse_bytes = wasm_function_uses_json_parse_bytes(fun);
   bool has_allocator = wasm_function_uses_allocator(fun);
   bool has_fallibility = wasm_function_uses_fallibility(fun);
   bool has_wasi_args = wasm_function_uses_wasi_args(fun);
@@ -3354,7 +3477,8 @@ static bool wasm_emit_function_body(ZBuf *body, const IrProgram *ir, const IrFun
   unsigned scalar_count = wasm_scalar_local_count(fun);
   unsigned byte_compare_base = scalar_count + (has_arrays ? 2 : 0) + (has_byte_views ? 1 : 0);
   unsigned byte_mutation_base = byte_compare_base + (has_byte_compare ? 5 : 0);
-  unsigned allocator_base = byte_mutation_base + (has_byte_mutation ? 2 : 0);
+  unsigned json_base = byte_mutation_base + (has_byte_mutation ? 2 : 0);
+  unsigned allocator_base = json_base + (has_json_parse_bytes ? 1 : 0);
   unsigned fallibility_base = allocator_base + (has_allocator ? 2 : 0);
   unsigned args_base = fallibility_base + (has_fallibility ? 1 : 0);
   unsigned fs_base = args_base + (has_wasi_args_env ? 3 : 0);
@@ -3369,6 +3493,7 @@ static bool wasm_emit_function_body(ZBuf *body, const IrProgram *ir, const IrFun
     .has_wasi_env = has_wasi_env,
     .has_wasi_fs = has_wasi_fs,
     .imported_function_count = imports ? imports->function_count : 0,
+    .zero_json_parse_bytes_import_index = imports ? imports->zero_json_parse_bytes_function_index : (unsigned)-1,
     .fd_write_import_index = imports ? imports->fd_write_function_index : (unsigned)-1,
     .fd_read_import_index = imports ? imports->fd_read_function_index : (unsigned)-1,
     .fd_close_import_index = imports ? imports->fd_close_function_index : (unsigned)-1,
@@ -3395,6 +3520,7 @@ static bool wasm_emit_function_body(ZBuf *body, const IrProgram *ir, const IrFun
     .byte_cmp_result_local_index = byte_compare_base + 4,
     .byte_mut_len_local_index = byte_mutation_base,
     .byte_mut_i_local_index = byte_mutation_base + 1,
+    .json_result_local_index = has_json_parse_bytes ? json_base : (unsigned)-1,
     .alloc_len_local_index = allocator_base,
     .alloc_next_local_index = allocator_base + 1,
     .error_result_local_index = fallibility_base,
@@ -3456,6 +3582,11 @@ static bool wasm_emit_function_body(ZBuf *body, const IrProgram *ir, const IrFun
   if (has_byte_mutation) {
     wasm_append_u32_leb(&local_decls, 2);
     wasm_append_byte(&local_decls, 0x7f);
+    local_decl_count++;
+  }
+  if (has_json_parse_bytes) {
+    wasm_append_u32_leb(&local_decls, 1);
+    wasm_append_byte(&local_decls, 0x7e);
     local_decl_count++;
   }
   if (has_allocator) {
@@ -3523,6 +3654,7 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     return wasm_diag(diag, "direct wasm MVP requires at least one exported function", 1, 1, "empty program");
   }
   bool module_has_arrays = false;
+  bool module_uses_zero_json_parse_bytes = false;
   bool module_uses_memory_peek = false;
   bool module_uses_world_write = false;
   bool module_uses_wasi_clock = false;
@@ -3538,6 +3670,7 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
   bool module_uses_wasi_path_rename = false;
   for (size_t i = 0; i < ir->function_len; i++) {
     if (wasm_function_has_arrays(&ir->functions[i])) module_has_arrays = true;
+    if (wasm_function_uses_json_parse_bytes(&ir->functions[i])) module_uses_zero_json_parse_bytes = true;
     if (wasm_function_uses_memory_peek(&ir->functions[i])) module_uses_memory_peek = true;
     if (wasm_function_uses_world_write(&ir->functions[i])) module_uses_world_write = true;
     if (wasm_function_uses_wasi_clock(&ir->functions[i])) module_uses_wasi_clock = true;
@@ -3552,8 +3685,9 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     if (wasm_function_uses_wasi_path_unlink_file(&ir->functions[i])) module_uses_wasi_path_unlink_file = true;
     if (wasm_function_uses_wasi_path_rename(&ir->functions[i])) module_uses_wasi_path_rename = true;
   }
-  bool module_has_memory = module_has_arrays || module_uses_memory_peek || module_uses_world_write || module_uses_wasi_clock || module_uses_wasi_random || module_uses_wasi_args || module_uses_wasi_env || module_uses_wasi_fs || ir->data_segment_len > 0;
+  bool module_has_memory = module_has_arrays || module_uses_zero_json_parse_bytes || module_uses_memory_peek || module_uses_world_write || module_uses_wasi_clock || module_uses_wasi_random || module_uses_wasi_args || module_uses_wasi_env || module_uses_wasi_fs || ir->data_segment_len > 0;
   WasmImportPlan imports = {
+    .zero_json_parse_bytes = module_uses_zero_json_parse_bytes,
     .fd_write = module_uses_world_write || module_uses_wasi_fs,
     .fd_read = module_uses_wasi_fs,
     .fd_close = module_uses_wasi_fs,
@@ -3570,6 +3704,7 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     .path_remove_directory = module_uses_wasi_path_remove_directory,
     .path_unlink_file = module_uses_wasi_path_unlink_file,
     .path_rename = module_uses_wasi_path_rename,
+    .zero_json_parse_bytes_function_index = (unsigned)-1,
     .fd_write_function_index = (unsigned)-1,
     .fd_read_function_index = (unsigned)-1,
     .fd_close_function_index = (unsigned)-1,
@@ -3586,6 +3721,7 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     .path_remove_directory_function_index = (unsigned)-1,
     .path_unlink_file_function_index = (unsigned)-1,
     .path_rename_function_index = (unsigned)-1,
+    .zero_json_parse_bytes_type_index = (unsigned)-1,
     .fd_write_type_index = (unsigned)-1,
     .fd_read_type_index = (unsigned)-1,
     .fd_close_type_index = (unsigned)-1,
@@ -3603,6 +3739,10 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     .path_unlink_file_type_index = (unsigned)-1,
     .path_rename_type_index = (unsigned)-1
   };
+  if (imports.zero_json_parse_bytes) {
+    imports.zero_json_parse_bytes_function_index = imports.function_count++;
+    imports.zero_json_parse_bytes_type_index = imports.type_count++;
+  }
   if (imports.fd_write) {
     imports.fd_write_function_index = imports.function_count++;
     imports.fd_write_type_index = imports.type_count++;
@@ -3675,6 +3815,14 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
   ZBuf types;
   zbuf_init(&types);
   wasm_append_u32_leb(&types, (uint32_t)(ir->function_len + imports.type_count));
+  if (imports.zero_json_parse_bytes) {
+    wasm_append_byte(&types, 0x60);
+    wasm_append_u32_leb(&types, 2);
+    wasm_append_byte(&types, 0x7f);
+    wasm_append_byte(&types, 0x7f);
+    wasm_append_u32_leb(&types, 1);
+    wasm_append_byte(&types, 0x7e);
+  }
   if (imports.fd_write) {
     wasm_append_byte(&types, 0x60);
     wasm_append_u32_leb(&types, 4);
@@ -3849,6 +3997,12 @@ bool z_emit_wasm_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {
     ZBuf import_section;
     zbuf_init(&import_section);
     wasm_append_u32_leb(&import_section, imports.function_count);
+    if (imports.zero_json_parse_bytes) {
+      wasm_append_name(&import_section, "zero_runtime");
+      wasm_append_name(&import_section, "zero_json_parse_bytes");
+      wasm_append_byte(&import_section, 0x00);
+      wasm_append_u32_leb(&import_section, imports.zero_json_parse_bytes_type_index);
+    }
     if (imports.fd_write) {
       wasm_append_name(&import_section, "wasi_snapshot_preview1");
       wasm_append_name(&import_section, "fd_write");

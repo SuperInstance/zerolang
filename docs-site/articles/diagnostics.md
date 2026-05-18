@@ -152,7 +152,7 @@ The native compiler keeps stable codes for implemented control-flow and type rul
 - `FLD001`: a shape literal includes an unknown field
 - `FLD002`: a shape literal omitted a required field that has no default
 - `TAR001`: the requested target name is not in `zero targets`
-- `TAR002`: the selected non-host target does not provide the hosted filesystem capability required by `std.fs`
+- `TAR002`: the selected target does not provide a capability required by the program
 - Bounds check failures: native executables print `zero bounds check failed` and
   abort when an index, indexed assignment, or slice range is outside the base
   length.
@@ -177,10 +177,10 @@ bin/zero check --json --target linux-musl-x64 conformance/native/fail/std-fs-tar
 ```
 
 The diagnostic uses `TAR002`, `fixSafety: "requires-human-review"`, and repair
-id `remove-hosted-fs-or-use-host-target`.
+id `choose-target-with-required-capability`.
 
-The canonical repair is either to build for the host target or move the
-`std.fs` call out of the target-neutral entry point.
+The canonical repair is to build for a target with the required capability or
+move that code behind a target-specific entry point.
 
 Writable byte helpers require mutable storage:
 
