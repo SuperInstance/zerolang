@@ -4056,6 +4056,28 @@ static bool runtime_import_audit_uses_http_provider(const RuntimeImportAudit *au
   return audit && audit->zero_http_fetch_result;
 }
 
+static void append_runtime_import_module_json(ZBuf *buf, const RuntimeImportAudit *audit, bool wasm_target, size_t import_count) {
+  if (import_count == 0) {
+    zbuf_append(buf, "null");
+    return;
+  }
+  bool uses_zero_runtime = runtime_import_audit_uses_zero_runtime(audit);
+  if (!wasm_target) {
+    append_json_string(buf, uses_zero_runtime ? "zero_runtime" : "wasi_snapshot_preview1");
+    return;
+  }
+  size_t zero_runtime_count = native_zero_runtime_import_count(audit);
+  if (zero_runtime_count > 0 && zero_runtime_count == import_count) {
+    append_json_string(buf, "zero_runtime");
+    return;
+  }
+  if (zero_runtime_count > 0) {
+    append_json_string(buf, "mixed");
+    return;
+  }
+  append_json_string(buf, "wasi_snapshot_preview1");
+}
+
 static bool append_runtime_import_functions_json(ZBuf *buf, const RuntimeImportAudit *audit, bool wasm_target) {
   bool first = true;
   zbuf_append(buf, "[");
@@ -4118,13 +4140,10 @@ static void append_wasm_memory_floor_json(ZBuf *buf, const SourceInput *input, b
 static void append_runtime_import_audit_json(ZBuf *buf, const IrProgram *ir, const SourceInput *input, const ZTargetInfo *target) {
   RuntimeImportAudit audit = runtime_import_audit_from_ir(ir);
   bool wasm_target = target_is_wasm_object(target);
-  bool uses_zero_runtime = runtime_import_audit_uses_zero_runtime(&audit);
   size_t import_count = wasm_target ? runtime_import_audit_count(&audit) : native_zero_runtime_import_count(&audit);
   bool linear_memory = runtime_linear_memory_required(input, wasm_target, import_count);
   zbuf_append(buf, "{\"source\":\"direct-wasm-ir-scan\",\"module\":");
-  if (uses_zero_runtime && !wasm_target) append_json_string(buf, "zero_runtime");
-  else if (import_count > 0) append_json_string(buf, "wasi_snapshot_preview1");
-  else zbuf_append(buf, "null");
+  append_runtime_import_module_json(buf, &audit, wasm_target, import_count);
   zbuf_append(buf, ",\"functions\":");
   append_runtime_import_functions_json(buf, &audit, wasm_target);
   zbuf_appendf(buf, ",\"functionCount\":%zu", import_count);
@@ -4151,9 +4170,7 @@ static void append_portable_runtime_json(ZBuf *buf, const IrProgram *ir, const S
   zbuf_append(buf, ",\"imports\":{\"source\":\"direct-wasm-ir-scan\",\"explicit\":");
   zbuf_append(buf, (wasm_target || uses_zero_runtime) ? "true" : "false");
   zbuf_append(buf, ",\"module\":");
-  if (uses_zero_runtime && !wasm_target) append_json_string(buf, "zero_runtime");
-  else if (import_count > 0) append_json_string(buf, "wasi_snapshot_preview1");
-  else zbuf_append(buf, "null");
+  append_runtime_import_module_json(buf, &audit, wasm_target, import_count);
   zbuf_append(buf, ",\"functions\":");
   append_runtime_import_functions_json(buf, &audit, wasm_target);
   zbuf_appendf(buf, ",\"functionCount\":%zu", import_count);
@@ -4335,10 +4352,13 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     const char *object_format = target && target->object_format ? target->object_format : "unknown";
     const char *arch = target && target->arch ? target->arch : "unknown";
     size_t direct_symbol_count = input ? input->direct_function_count : 0;
+    bool wasm_object = strcmp(object_format, "wasm") == 0;
     bool uses_zero_runtime = input && input->direct_host_runtime_import_count > 0;
     bool uses_http_runtime = input && input->direct_http_runtime_import_count > 0;
+    bool links_zero_runtime = uses_zero_runtime && !wasm_object;
+    bool links_http_runtime = uses_http_runtime && !wasm_object;
     ZToolchainPlan runtime_toolchain = z_plan_toolchain(command ? command->cc : NULL, command ? command->profile : NULL, target);
-    const char *runtime_external_toolchain = uses_zero_runtime ? public_compiler_label(&runtime_toolchain) : "none";
+    const char *runtime_external_toolchain = links_zero_runtime ? public_compiler_label(&runtime_toolchain) : "none";
     zbuf_append(buf, "{\"internalIr\":{\"typeRepresentation\":\"MIR primitive value types\",\"controlFlowRepresentation\":\"MIR instruction stream lowered to target machine/module code\",\"callRepresentation\":\"same-object direct calls for supported direct subsets\",\"functionIdentity\":\"module-qualified-stable-sorted\",\"debugRepresentation\":\"source spans retained on MIR nodes\"}");
     bool direct_has_data = input && input->direct_readonly_data_bytes > 0;
     direct_symbol_count += input ? input->direct_runtime_helper_count : 0;
@@ -4347,8 +4367,8 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     zbuf_appendf(buf, ",\"objectEmission\":{\"path\":\"%s\",\"functions\":true,\"dataSections\":%s,\"symbols\":%s,\"relocations\":\"%s\",\"symbolCount\":%zu,\"internalHelperCount\":%zu}",
                  direct_object_path_for_emitter(direct_emitter),
                  direct_has_data ? "true" : "false",
-                 strcmp(object_format, "wasm") == 0 ? "false" : "true",
-                 strcmp(object_format, "wasm") == 0 ? "none-in-mvp" : (uses_zero_runtime ? "patched-runtime-import-relocations" : (direct_has_data ? "patched-internal-calls-and-data-relocations" : "patched-internal-calls-or-none-in-mvp")),
+                 wasm_object ? "false" : "true",
+                 wasm_object ? "none-in-mvp" : (uses_zero_runtime ? "patched-runtime-import-relocations" : (direct_has_data ? "patched-internal-calls-and-data-relocations" : "patched-internal-calls-or-none-in-mvp")),
                  direct_symbol_count,
                  input && input->direct_function_count > input->direct_export_count ? input->direct_function_count - input->direct_export_count : 0);
     zbuf_append(buf, ",\"linking\":{\"linkerFlavor\":");
@@ -4356,15 +4376,15 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     zbuf_append(buf, ",\"objectFormat\":");
     append_json_string(buf, object_format);
     zbuf_append(buf, ",\"targetLibraries\":");
-    append_json_string(buf, uses_http_runtime ? "zero-runtime,curl" : (uses_zero_runtime ? "zero-runtime" : "none"));
+    append_json_string(buf, links_http_runtime ? "zero-runtime,curl" : (uses_zero_runtime ? (wasm_object ? "zero-runtime-import" : "zero-runtime") : "none"));
     zbuf_append(buf, ",\"symbolMap\":");
-    append_json_string(buf, strcmp(object_format, "wasm") == 0 ? "not-emitted-in-mvp" : "object-symbol-table");
+    append_json_string(buf, wasm_object ? "not-emitted-in-mvp" : "object-symbol-table");
     zbuf_append(buf, ",\"externalToolchain\":");
     append_json_string(buf, runtime_external_toolchain);
     zbuf_append(buf, ",\"toolchainSource\":");
-    append_json_string(buf, uses_zero_runtime ? "direct-backend-runtime-link-plan" : "direct-backend");
+    append_json_string(buf, uses_zero_runtime ? (wasm_object ? "direct-backend-runtime-import-plan" : "direct-backend-runtime-link-plan") : "direct-backend");
     zbuf_append(buf, ",\"stripArtifacts\":false}");
-    if (uses_http_runtime) {
+    if (links_http_runtime) {
       zbuf_append(buf, ",\"httpRuntime\":");
       z_append_http_runtime_json(buf, target);
     }
@@ -4373,13 +4393,13 @@ static void append_object_backend_json(ZBuf *buf, const SourceInput *input, cons
     zbuf_append(buf, ",\"flavor\":");
     append_json_string(buf, direct_linker_flavor_for_emitter(direct_emitter));
     zbuf_append(buf, ",\"archives\":[],\"staticLibraries\":");
-    zbuf_append(buf, uses_http_runtime ? "[\"zero_runtime.o\",\"zero_http_curl.o\"]" : (uses_zero_runtime ? "[\"zero_runtime.o\"]" : "[]"));
+    zbuf_append(buf, links_http_runtime ? "[\"zero_runtime.o\",\"zero_http_curl.o\"]" : (links_zero_runtime ? "[\"zero_runtime.o\"]" : "[]"));
     zbuf_append(buf, ",\"importLibraries\":[],\"systemLibraries\":");
-    zbuf_append(buf, uses_http_runtime ? "[\"curl\"]" : "[]");
+    zbuf_append(buf, links_http_runtime ? "[\"curl\"]" : "[]");
     zbuf_append(buf, ",\"rpaths\":[],\"loadPaths\":[],\"visibility\":\"exported-c-and-main-only\",\"crossLinking\":true,\"externalToolchain\":");
     append_json_string(buf, runtime_external_toolchain);
     zbuf_append(buf, ",\"reproducible\":true,\"libcMode\":");
-    append_json_string(buf, uses_zero_runtime ? runtime_toolchain.libc_mode : "none");
+    append_json_string(buf, links_zero_runtime ? runtime_toolchain.libc_mode : "none");
     zbuf_append(buf, ",\"targetLibcMode\":");
     append_json_string(buf, z_target_libc_mode(target));
     zbuf_appendf(buf, ",\"requiresSysroot\":false,\"targetRequiresSysroot\":%s,\"sysrootStatus\":",

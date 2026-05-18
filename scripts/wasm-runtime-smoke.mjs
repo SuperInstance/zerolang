@@ -62,6 +62,27 @@ function makeRuntime({ args = [], env = [], files = new Map(), dirs = new Set(["
     return Buffer.from(instance.exports.memory.buffer, ptr, len).toString("utf8");
   }
 
+  function countJsonTokens(value) {
+    let count = 1;
+    if (Array.isArray(value)) {
+      for (const item of value) count += countJsonTokens(item);
+    } else if (value !== null && typeof value === "object") {
+      for (const key of Object.keys(value)) {
+        count += 1;
+        count += countJsonTokens(value[key]);
+      }
+    }
+    return count;
+  }
+
+  function parseJsonBytes(ptr, len) {
+    try {
+      return BigInt(countJsonTokens(JSON.parse(readString(ptr, len))));
+    } catch {
+      return -1n;
+    }
+  }
+
   function byteLength(items) {
     return items.reduce((total, item) => total + Buffer.byteLength(item) + 1, 0);
   }
@@ -89,6 +110,9 @@ function makeRuntime({ args = [], env = [], files = new Map(), dirs = new Set(["
   }
 
   const imports = {
+    zero_runtime: {
+      zero_json_parse_bytes: parseJsonBytes,
+    },
     wasi_snapshot_preview1: {
       args_sizes_get(argcPtr, argvBufSizePtr) {
         writeI32(argcPtr, args.length);
@@ -251,6 +275,30 @@ const webEnvBuild = await buildWasm({
 instantiateAndRun(webEnvBuild.bytes, makeRuntime({
   env: ["ZERO_CONFORMANCE_ENV=agent-env", "OTHER=value"],
   expectedOutput: "env ok\n",
+}));
+
+const jsonBytesWebBuild = await buildWasm({
+  target: "wasm32-web",
+  input: "conformance/native/pass/std-json-bytes.0",
+  name: "std-json-bytes-web",
+});
+assert(WebAssembly.Module.imports(new WebAssembly.Module(jsonBytesWebBuild.bytes)).some((entry) =>
+  entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
+));
+instantiateAndRun(jsonBytesWebBuild.bytes, makeRuntime({
+  expectedOutput: "",
+}));
+
+const jsonBytesWasiBuild = await buildWasm({
+  target: "wasm32-wasi",
+  input: "examples/std-json-bytes.0",
+  name: "std-json-bytes-wasi",
+});
+assert(WebAssembly.Module.imports(new WebAssembly.Module(jsonBytesWasiBuild.bytes)).some((entry) =>
+  entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
+));
+instantiateAndRun(jsonBytesWasiBuild.bytes, makeRuntime({
+  expectedOutput: "std json bytes ok\n",
 }));
 
 const fsBuild = await buildWasm({

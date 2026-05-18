@@ -25,6 +25,38 @@ function runnableExeArgs(input, out) {
 
 await mkdir(outDir, { recursive: true });
 
+function countJsonTokens(value) {
+  let count = 1;
+  if (Array.isArray(value)) {
+    for (const item of value) count += countJsonTokens(item);
+  } else if (value !== null && typeof value === "object") {
+    for (const key of Object.keys(value)) {
+      count += 1;
+      count += countJsonTokens(value[key]);
+    }
+  }
+  return count;
+}
+
+async function instantiateJsonRuntimeWasm(bytes) {
+  let instance;
+  const imports = {
+    zero_runtime: {
+      zero_json_parse_bytes(ptr, len) {
+        try {
+          const text = Buffer.from(instance.exports.memory.buffer, ptr, len).toString("utf8");
+          return BigInt(countJsonTokens(JSON.parse(text)));
+        } catch {
+          return -1n;
+        }
+      },
+    },
+  };
+  const instantiated = await WebAssembly.instantiate(bytes, imports);
+  instance = instantiated.instance;
+  return instantiated;
+}
+
 async function assertBoundsTrap(fixture, name) {
   const out = `${outDir}/${name}`;
   const build = await execFileAsync(zero, ["build", "--json", "--emit", "exe", "--target", "linux-musl-x64", fixture, "--out", out]).catch((error) => error);
@@ -858,6 +890,20 @@ assert.equal(directByteViewLocalsBody.objectBackend.directFacts.runtime.readonly
 const directByteViewLocalsBytes = await readFile(`${directByteViewLocalsOut}.wasm`);
 const directByteViewLocalsInstance = await WebAssembly.instantiate(directByteViewLocalsBytes, {});
 assert.equal(directByteViewLocalsInstance.instance.exports.main(), 107);
+
+const directJsonBytesOut = `${outDir}/direct-json-bytes`;
+const directJsonBytesJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "conformance/native/pass/std-json-bytes.0", "--out", directJsonBytesOut]);
+const directJsonBytesBody = JSON.parse(directJsonBytesJson.stdout);
+assert.equal(directJsonBytesBody.generatedCBytes, 0);
+assert.equal(directJsonBytesBody.objectBackend.objectEmission.path, "direct-wasm");
+assert.equal(directJsonBytesBody.objectBackend.directFacts.runtime.linearMemory, true);
+assert.equal(directJsonBytesBody.objectBackend.directFacts.runtime.readonlyDataBytes, 9);
+const directJsonBytesBytes = await readFile(`${directJsonBytesOut}.wasm`);
+assert(WebAssembly.Module.imports(new WebAssembly.Module(directJsonBytesBytes)).some((entry) =>
+  entry.module === "zero_runtime" && entry.name === "zero_json_parse_bytes"
+));
+const directJsonBytesInstance = await instantiateJsonRuntimeWasm(directJsonBytesBytes);
+assert.equal(directJsonBytesInstance.instance.exports.main(), 0);
 
 const directMutSpanLenOut = `${outDir}/direct-mutspan-len`;
 const directMutSpanLenJson = await execFileAsync(zero, ["build", "--json", "--emit", "wasm", "--target", "wasm32-web", "examples/direct-mutspan-len.0", "--out", directMutSpanLenOut]);

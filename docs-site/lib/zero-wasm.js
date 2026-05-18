@@ -254,6 +254,8 @@ export async function hydrateWasmResult(result) {
 }
 
 function createPlaygroundWasiImports(getMemory, output) {
+  const jsonDecoder = new TextDecoder();
+
   function writeOutput(fd, iovs, iovsLen, writtenPtr) {
     const memory = getMemory();
     if (!memory) return 8;
@@ -276,7 +278,34 @@ function createPlaygroundWasiImports(getMemory, output) {
     return 0;
   }
 
+  function countJsonTokens(value) {
+    let count = 1;
+    if (Array.isArray(value)) {
+      for (const item of value) count += countJsonTokens(item);
+    } else if (value !== null && typeof value === "object") {
+      for (const key of Object.keys(value)) {
+        count += 1;
+        count += countJsonTokens(value[key]);
+      }
+    }
+    return count;
+  }
+
+  function parseJsonBytes(ptr, len) {
+    const memory = getMemory();
+    if (!memory) return -1n;
+    try {
+      const bytes = new Uint8Array(memory.buffer, ptr, len);
+      return BigInt(countJsonTokens(JSON.parse(jsonDecoder.decode(bytes))));
+    } catch {
+      return -1n;
+    }
+  }
+
   return {
+    zero_runtime: {
+      zero_json_parse_bytes: parseJsonBytes,
+    },
     wasi_snapshot_preview1: {
       fd_write: writeOutput,
       fd_read() { return 8; },
