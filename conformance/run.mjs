@@ -1132,6 +1132,23 @@ assert.notEqual(interfaceMethodStaticUnsupportedTypeJson.code, 0);
 const interfaceMethodStaticUnsupportedTypeBody = JSON.parse(interfaceMethodStaticUnsupportedTypeJson.stdout);
 assert.equal(interfaceMethodStaticUnsupportedTypeBody.diagnostics[0].code, "STC001");
 
+const shapeMethodStaticUnsupportedTypeFixture = `${outDir}/shape-method-static-unsupported-type.0`;
+await writeFile(shapeMethodStaticUnsupportedTypeFixture, `shape Box {
+    value: u8,
+
+    fun value<static N: String>(self: ref<Self>) -> u8 {
+        return self.value
+    }
+}
+
+pub fun main() -> Void {
+}
+`);
+const shapeMethodStaticUnsupportedTypeJson = await execFileAsync(zero, ["check", "--json", shapeMethodStaticUnsupportedTypeFixture]).catch((error) => error);
+assert.notEqual(shapeMethodStaticUnsupportedTypeJson.code, 0);
+const shapeMethodStaticUnsupportedTypeBody = JSON.parse(shapeMethodStaticUnsupportedTypeJson.stdout);
+assert.equal(shapeMethodStaticUnsupportedTypeBody.diagnostics[0].code, "STC001");
+
 for (const value of ["4_", "M"]) {
   const fixture = `${outDir}/interface-static-constraint-${value.replace(/[^A-Za-z0-9]/g, "_")}.0`;
   await writeFile(fixture, `interface First<T, static N: usize> {

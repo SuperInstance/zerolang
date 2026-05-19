@@ -8240,6 +8240,7 @@ bool z_check_program(const Program *program, ZDiag *diag) {
     for (size_t method_index = 0; method_index < program->shapes.items[i].methods.len; method_index++) {
       Function *method = &program->shapes.items[i].methods.items[method_index];
       if (!validate_type_param_names_do_not_shadow(program, &method->type_params, &program->shapes.items[i].type_params, diag)) return false;
+      if (!validate_static_type_param_decls(program, &method->type_params, diag)) return false;
       if (!validate_shape_method_type_form(method->return_type, diag, method->line, method->column)) return false;
       if (!validate_type_names(program, method->return_type, &program->shapes.items[i].type_params, &method->type_params, true, diag, method->line, method->column)) return false;
       for (size_t param_index = 0; param_index < method->params.len; param_index++) {
