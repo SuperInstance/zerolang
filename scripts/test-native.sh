@@ -177,6 +177,7 @@ run_native_or_gap conformance/native/pass/variants-defer-stdlib.0 .zero/native-t
 run_native_or_gap conformance/native/pass/payload-match.0 .zero/native-test/payload-match "native payload match"
 run_native_or_gap conformance/native/pass/std-mem-arrays.0 .zero/native-test/std-mem-arrays "native std mem arrays"
 run_native_or_gap conformance/native/pass/memory-types.0 .zero/native-test/memory-types "native memory types"
+run_native_or_gap conformance/native/pass/recursive-fibonacci.0 .zero/native-test/recursive-fibonacci "recursive fibonacci ok"
 run_native_or_gap conformance/native/pass/owned-transfer.0 .zero/native-test/owned-transfer "owned transfer ok"
 run_native_or_gap conformance/native/pass/owned-drop-cleanup.0 .zero/native-test/owned-drop-cleanup "owned drop cleanup ok"
 run_native_or_gap conformance/native/pass/owned-drop-move-suppressed.0 .zero/native-test/owned-drop-move-suppressed "owned drop move suppressed ok"
