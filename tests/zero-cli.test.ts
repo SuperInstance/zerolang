@@ -153,6 +153,11 @@ describe("native zero CLI", () => {
     const routes = JSON.parse((await runZero(["routes", "--json", "examples/web/hello"])).stdout);
     assert.equal(routes.routes[0].path, "/");
 
+    const webDevPlan = JSON.parse((await runZero(["dev", "--json", "--target", "wasm32-web", "examples/web/hello"])).stdout);
+    assert.equal(webDevPlan.localRuntime.runtimeKind, "browser-worker");
+    assert.equal(webDevPlan.localRuntime.productionLikeImports, true);
+    assert.equal(webDevPlan.localRuntime.capabilityRestrictions.filesystem, "denied");
+
     const objOut = join(tmpdir(), `zero-target-${Date.now()}.o`);
     try {
       const objBuild = await runZero(["build", "--emit", "obj", "--target", "linux-musl-arm64", "examples/hello.0", "--out", objOut]);

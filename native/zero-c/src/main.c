@@ -9445,6 +9445,16 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (strcmp(command.command, "dev") == 0 && target_name_is(target, "wasm32-web")) {
+    char *web_dev = NULL;
+    if (z_discover_web_dev_plan_json(command.input, &web_dev, &diag)) {
+      fputs(web_dev, stdout);
+      free(web_dev);
+      return 0;
+    }
+    diag = (ZDiag){0};
+  }
+
   SourceInput input = {0};
   Program program = {0};
   if (!compile_input(command.input, target, &input, &program, &diag)) {

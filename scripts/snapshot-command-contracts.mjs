@@ -1553,6 +1553,13 @@ assert.equal(routes.localRuntime.productionLikeImports, true);
 assert.equal(routes.localRuntime.frameworkTaxBytes, 0);
 assert.equal(routes.webBundle.deployment.providerSpecific, false);
 assert.equal(routes.webBundle.deployment.vercel, "out-of-scope");
+const webDevPlan = json(["dev", "--json", "--target", "wasm32-web", "examples/web/hello"]).body;
+assert.equal(webDevPlan.localRuntime.runtimeKind, "browser-worker");
+assert.equal(webDevPlan.localRuntime.productionLikeImports, true);
+assert.equal(webDevPlan.localRuntime.providerSpecificDeployment, false);
+assert.equal(webDevPlan.localRuntime.capabilityRestrictions.filesystem, "denied");
+assert.equal(webDevPlan.watch.manifest, "examples/web/hello/zero.json");
+assert.equal(webDevPlan.watch.files.some((file) => file === "examples/web/hello/src/routes/index.0"), true);
 
 const diagnostics = [
   ["PAR100", ["check", "--json", "conformance/check/fail/parse-missing-brace.0"]],
