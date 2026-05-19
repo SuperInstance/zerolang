@@ -1906,6 +1906,43 @@ static bool type_is_generic_param(const Function *fun, const char *type) {
   return false;
 }
 
+static bool type_text_references_name(const char *type, const char *name) {
+  if (!type || !name || !name[0]) return false;
+  size_t name_len = strlen(name);
+  const char *cursor = type;
+  while ((cursor = strstr(cursor, name)) != NULL) {
+    bool left_ok = cursor == type || !(isalnum((unsigned char)cursor[-1]) || cursor[-1] == '_');
+    bool right_ok = !(isalnum((unsigned char)cursor[name_len]) || cursor[name_len] == '_');
+    if (left_ok && right_ok) return true;
+    cursor += name_len;
+  }
+  return false;
+}
+
+static bool type_references_function_generic_param(const Function *fun, const char *type) {
+  if (!function_is_generic(fun) || !type) return false;
+  for (size_t i = 0; i < fun->type_params.len; i++) {
+    if (fun->type_params.items[i].is_static) continue;
+    if (type_text_references_name(type, fun->type_params.items[i].name)) return true;
+  }
+  return false;
+}
+
+static bool validate_recursive_generic_call_bindings(const Function *fun, const Expr *call, ZDiag *diag, GenericBinding *bindings, size_t binding_len) {
+  if (!checking_function || !function_is_generic(checking_function) || !function_is_generic(fun) || !call) return true;
+  if (checking_function != fun && (!checking_function->name || !fun->name || strcmp(checking_function->name, fun->name) != 0)) return true;
+  for (size_t i = 0; i < fun->type_params.len && i < binding_len; i++) {
+    const Param *param = &fun->type_params.items[i];
+    if (param->is_static) continue;
+    const char *bound = generic_binding_lookup(bindings, binding_len, param->name);
+    if (!type_references_function_generic_param(checking_function, bound)) continue;
+    const char *same_param = i < checking_function->type_params.len ? checking_function->type_params.items[i].name : NULL;
+    if (same_param && strcmp(bound, same_param) == 0) continue;
+    return set_diag_detail(diag, 3050, "recursive generic call changes type arguments", call->line, call->column, "recursive call with unchanged generic type parameters", bound ? bound : "Unknown", "call recursively with the current type parameters or use a concrete helper");
+  }
+  return true;
+}
+
 static bool is_static_int_param_type(const char *type) {
   return type && (strcmp(type, "usize") == 0 || strcmp(type, "isize") == 0 ||
                   strcmp(type, "u8") == 0 || strcmp(type, "u16") == 0 || strcmp(type, "u32") == 0 || strcmp(type, "u64") == 0 ||
@@ -4714,6 +4751,11 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
           GenericBinding *bindings = z_checked_calloc(fun->type_params.len, sizeof(GenericBinding));
           for (size_t binding_index = 0; binding_index < fun->type_params.len; binding_index++) bindings[binding_index].name = fun->type_params.items[binding_index].name;
           if (!build_generic_bindings(program, fun, expr, scope, diag, bindings, fun->type_params.len, expected)) {
+            generic_bindings_free(bindings, fun->type_params.len);
+            free(bindings);
+            return false;
+          }
+          if (!validate_recursive_generic_call_bindings(fun, expr, diag, bindings, fun->type_params.len)) {
             generic_bindings_free(bindings, fun->type_params.len);
             free(bindings);
             return false;

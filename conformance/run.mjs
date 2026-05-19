@@ -17,6 +17,7 @@ const runnableDirectTarget =
   process.platform === "darwin" && process.arch === "arm64" ? "darwin-arm64" :
   process.platform === "linux" && process.arch === "x64" ? "linux-musl-x64" :
   null;
+const checkTimeoutMs = Number(process.env.ZERO_CHECK_TIMEOUT_MS ?? 2000);
 
 function runnableExeArgs(input, out) {
   if (!runnableDirectTarget) return null;
@@ -59,6 +60,42 @@ async function assertDirectRuntimeOrUnsupported(fixture, name, expected) {
   else assert.equal(run.stdout, expected.stdout);
   if (expected.stderr !== undefined) assert.equal(run.stderr, expected.stderr);
   if (expected.file) assert.equal(await readFile(`${outDir}/${expected.file.name}`, "utf8"), expected.file.text);
+}
+
+async function assertCommonRuntimeOrUnsupported(fixture, name, expected) {
+  const target = runnableDirectTarget ?? "linux-musl-x64";
+  const out = `${outDir}/${name}`;
+  const build = await execFileAsync(zero, ["build", "--json", "--emit", "exe", "--target", target, fixture, "--out", out]).catch((error) => error);
+  if (build.code) {
+    const body = JSON.parse(build.stdout);
+    assert.equal(body.diagnostics?.[0]?.code, "CGEN004");
+    return;
+  }
+
+  const body = JSON.parse(build.stdout);
+  assert.equal(body.generatedCBytes, 0);
+  assert.equal(body.legacy, false);
+  if (!runnableDirectTarget) return;
+  const run = await execFileAsync(out, expected.args ?? [], expected.env ? { env: { ...process.env, ...expected.env } } : {}).catch((error) => error);
+  assert.equal(run.code ?? 0, 0);
+  assert.equal(run.signal ?? null, null);
+  if (expected.stdout instanceof RegExp) assert.match(run.stdout, expected.stdout);
+  else assert.equal(run.stdout, expected.stdout);
+  if (expected.stderr !== undefined) assert.equal(run.stderr, expected.stderr);
+  if (expected.file) assert.equal(await readFile(`${outDir}/${expected.file.name}`, "utf8"), expected.file.text);
+}
+
+async function assertCheckTimeoutOrDiagnostic(fixture, expectedCodes) {
+  const result = await execFileAsync(zero, ["check", "--json", fixture], { timeout: checkTimeoutMs }).catch((error) => error);
+  if (result.killed || result.signal) {
+    assert.equal(result.killed, true);
+    return { timedOut: true };
+  }
+  assert.notEqual(result.code, 0);
+  const body = JSON.parse(result.stdout);
+  const code = body.diagnostics?.[0]?.code;
+  assert(expectedCodes.includes(code), `expected one of ${expectedCodes.join(", ")}, got ${code}`);
+  return { timedOut: false, code };
 }
 
 async function assertElf64Object(path, exportedName) {
@@ -421,6 +458,10 @@ assert.deepEqual(agentSurfaceClassification.fixtures.map((item) => item.id), [
   "method-generic-type-shadowing",
   "method-generic-outer-shadowing",
   "method-generic-self-shadowing",
+  "interface-method-generic-binding",
+  "direct-generic-recursion",
+  "polymorphic-recursion-growth",
+  "stdlib-signature-parity",
   "borrow-lexical-lifetime",
   "unresolved-package-import",
   "malformed-use-current",
@@ -444,6 +485,43 @@ await assertAgentSurfaceGenericShadowing("conformance/agent-surface/fixtures/sha
 await assertAgentSurfaceGenericShadowing("conformance/agent-surface/fixtures/method-generic-type-shadowing.0", /already names a shape/);
 await assertAgentSurfaceGenericShadowing("conformance/agent-surface/fixtures/method-generic-outer-shadowing.0", /outer generic scope/);
 await assertAgentSurfaceGenericShadowing("conformance/agent-surface/fixtures/method-generic-self-shadowing.0", /reserved for method Self types/);
+
+const agentSurfaceInterfaceMethodGeneric = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/interface-method-generic-binding.0"]);
+const agentSurfaceInterfaceMethodGenericBody = JSON.parse(agentSurfaceInterfaceMethodGeneric.stdout);
+assert.equal(agentSurfaceInterfaceMethodGenericBody.ok, true);
+assert.equal(agentSurfaceInterfaceMethodGenericBody.diagnostics.length, 0);
+
+const agentSurfaceDirectGenericCheck = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/direct-generic-recursion.0"]);
+const agentSurfaceDirectGenericCheckBody = JSON.parse(agentSurfaceDirectGenericCheck.stdout);
+assert.equal(agentSurfaceDirectGenericCheckBody.ok, true);
+assert.equal(agentSurfaceDirectGenericCheckBody.diagnostics.length, 0);
+const agentSurfaceDirectGenericReadiness = await execFileAsync(zero, [
+  "check",
+  "--json",
+  "--emit",
+  "obj",
+  "--target",
+  "linux-musl-x64",
+  "conformance/agent-surface/fixtures/direct-generic-recursion.0",
+]);
+const agentSurfaceDirectGenericReadinessBody = JSON.parse(agentSurfaceDirectGenericReadiness.stdout);
+assert.equal(agentSurfaceDirectGenericReadinessBody.ok, true);
+assert.equal(agentSurfaceDirectGenericReadinessBody.targetReadiness.ok, true);
+assert.equal(agentSurfaceDirectGenericReadinessBody.targetReadiness.buildable, true);
+assert.equal(agentSurfaceDirectGenericReadinessBody.targetReadiness.diagnostics.length, 0);
+
+const agentSurfacePolymorphicRecursion = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/polymorphic-recursion-growth.0"]).catch((error) => error);
+assert.notEqual(agentSurfacePolymorphicRecursion.code, 0);
+const agentSurfacePolymorphicRecursionBody = JSON.parse(agentSurfacePolymorphicRecursion.stdout);
+assert.equal(agentSurfacePolymorphicRecursionBody.diagnostics[0].code, "TYP027");
+assert.match(agentSurfacePolymorphicRecursionBody.diagnostics[0].message, /recursive generic call/);
+
+const compilerMetrics = await execFileAsync("node", ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "scripts/compiler-metrics.mts"]);
+const compilerMetricsBody = JSON.parse(compilerMetrics.stdout);
+assert.equal(compilerMetricsBody.schema, 1);
+assert(compilerMetricsBody.files["native/zero-c/src/checker.c"].lines > 0);
+assert(compilerMetricsBody.largeFunctions.length > 0);
+assert(compilerMetricsBody.stdlib.mainHelperCount > 0);
 
 const agentSurfaceBorrowLifetime = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/borrow-lexical-lifetime.0"]).catch((error) => error);
 assert.notEqual(agentSurfaceBorrowLifetime.code, 0);
@@ -615,6 +693,51 @@ await assertAgentSurfaceOwnedDropUnsupported("linux-musl-x64", "obj", "agent-sur
 await assertAgentSurfaceOwnedDropUnsupported("darwin-arm64", "obj", "agent-surface-owned-drop-macho.o", /Mach-O/, "macho", "zero-macho64");
 await assertAgentSurfaceOwnedDropUnsupported("win32-x64.exe", "obj", "agent-surface-owned-drop-coff.obj", /COFF/, "coff", "zero-coff-x64");
 await assertAgentSurfaceOwnedDropUnsupported("darwin-arm64", "obj", "agent-surface-owned-drop-macho-backend-ignored.o", /Mach-O/, "macho", "zero-macho64", { extraArgs: ["--backend", "zero-elf64"] });
+
+const commonPassFixtures = [
+  ["conformance/common/pass/array-sum-min-max.0", "common-array-sum-min-max", { stdout: "array sum min max ok\n" }],
+  ["conformance/common/pass/bytes-reverse.0", "common-bytes-reverse", { stdout: "bytes reverse ok\n" }],
+  ["conformance/common/pass/cli-args.0", "common-cli-args", { stdout: "alpha\n", args: ["alpha", "beta"] }],
+  ["conformance/common/pass/count-words-lines.0", "common-count-words-lines", { stdout: "count words lines ok\n" }],
+  ["conformance/common/pass/factorial.0", "common-factorial", { stdout: "factorial ok\n" }],
+  ["conformance/common/pass/fib-iterative.0", "common-fib-iterative", { stdout: "fib iterative ok\n" }],
+  ["conformance/common/pass/fib-recursive.0", "common-fib-recursive", { stdout: "fib recursive ok\n" }],
+  ["conformance/common/pass/file-copy.0", "common-file-copy", { stdout: "file copy ok\n", file: { name: "common-file-copy-output.txt", text: "zero file copy\n" } }],
+  ["conformance/common/pass/gcd.0", "common-gcd", { stdout: "gcd ok\n" }],
+  ["conformance/common/pass/json-roundtrip.0", "common-json-roundtrip", { stdout: "json roundtrip ok\n" }],
+  ["conformance/common/pass/palindrome.0", "common-palindrome", { stdout: "palindrome ok\n" }],
+  ["conformance/common/pass/prime.0", "common-prime", { stdout: "prime ok\n" }],
+  ["conformance/common/pass/sieve-small.0", "common-sieve-small", { stdout: "sieve small ok\n" }],
+  ["conformance/common/pass/sort-small.0", "common-sort-small", { stdout: "sort small ok\n" }],
+  ["conformance/common/pass/string-search.0", "common-string-search", { stdout: "string search ok\n" }],
+  ["conformance/common/pass/word-reverse.0", "common-word-reverse", { stdout: "word reverse ok\n" }],
+];
+
+for (const [fixture, name, expected] of commonPassFixtures) {
+  const check = await execFileAsync(zero, ["check", "--json", fixture]);
+  assert.equal(JSON.parse(check.stdout).ok, true);
+  const graph = await execFileAsync(zero, ["graph", "--json", fixture]);
+  assert(JSON.parse(graph.stdout).sourceFiles.includes(fixture));
+  const size = await execFileAsync(zero, ["size", "--json", fixture]);
+  assert.equal(JSON.parse(size.stdout).schemaVersion, 1);
+  await assertCommonRuntimeOrUnsupported(fixture, name, expected);
+}
+
+for (const [fixture, code] of [
+  ["conformance/common/fail/immutable-buffer-reverse.0", "TYP009"],
+  ["conformance/common/fail/json-raw-allocator.0", "STD003"],
+  ["conformance/common/fail/missing-check-fallible.0", "ERR003"],
+  ["conformance/common/fail/wrong-numeric-width.0", "TYP016"],
+]) {
+  const result = await execFileAsync(zero, ["check", "--json", fixture]).catch((error) => error);
+  assert.notEqual(result.code, 0);
+  assert.equal(JSON.parse(result.stdout).diagnostics[0].code, code);
+}
+
+const commonUnsupportedTarget = await execFileAsync(zero, ["check", "--json", "--target", "linux-musl-x64", "conformance/common/fail/unsupported-target-feature.0"]).catch((error) => error);
+assert.notEqual(commonUnsupportedTarget.code, 0);
+assert.equal(JSON.parse(commonUnsupportedTarget.stdout).diagnostics[0].code, "TAR002");
+
 const compileTimeJson = await execFileAsync(zero, ["check", "--json", "conformance/native/pass/compile-time-v1.0"]);
 const compileTimeBody = JSON.parse(compileTimeJson.stdout);
 assert.equal(compileTimeBody.ok, true);

@@ -396,6 +396,10 @@ static bool macho_type_is_scalar64(IrTypeKind type) {
   return type == IR_TYPE_I64 || type == IR_TYPE_U64;
 }
 
+static bool macho_type_is_unsigned(IrTypeKind type) {
+  return type == IR_TYPE_U8 || type == IR_TYPE_U16 || type == IR_TYPE_USIZE || type == IR_TYPE_U32 || type == IR_TYPE_U64;
+}
+
 static bool macho_type_is_scalar(IrTypeKind type) {
   return macho_type_is_scalar32(type) || macho_type_is_scalar64(type);
 }
@@ -535,6 +539,14 @@ static void macho_emit_binary_w(ZBuf *text, IrBinaryOp op, unsigned dst, unsigne
   } else if (op == IR_BIN_MUL) {
     append_u32le(text, 0x1b000000u | ((rhs & 31u) << 16) | (31u << 10) | ((lhs & 31u) << 5) | (dst & 31u));
   }
+}
+
+static void macho_emit_div_w(ZBuf *text, unsigned dst, unsigned lhs, unsigned rhs, bool is_unsigned) {
+  append_u32le(text, (is_unsigned ? 0x1ac00800u : 0x1ac00c00u) | ((rhs & 31u) << 16) | ((lhs & 31u) << 5) | (dst & 31u));
+}
+
+static void macho_emit_msub_w(ZBuf *text, unsigned dst, unsigned lhs, unsigned rhs, unsigned acc) {
+  append_u32le(text, 0x1b008000u | ((rhs & 31u) << 16) | ((acc & 31u) << 10) | ((lhs & 31u) << 5) | (dst & 31u));
 }
 
 static void macho_emit_cmp_w(ZBuf *text, unsigned lhs, unsigned rhs) {
@@ -1085,12 +1097,20 @@ static bool macho_emit_value_to_reg_at(ZBuf *text, const IrFunction *fun, const 
         macho_patch_branch26(text, right_true_end, text->len);
         return true;
       }
-      if (value->binary_op != IR_BIN_ADD && value->binary_op != IR_BIN_SUB && value->binary_op != IR_BIN_MUL) return macho_diag_at(diag, "direct AArch64 Mach-O binary operator is unsupported", value->line, value->column, "unsupported operator");
+      if (value->binary_op != IR_BIN_ADD && value->binary_op != IR_BIN_SUB && value->binary_op != IR_BIN_MUL &&
+          value->binary_op != IR_BIN_DIV && value->binary_op != IR_BIN_MOD) return macho_diag_at(diag, "direct AArch64 Mach-O binary operator is unsupported", value->line, value->column, "unsupported operator");
       if (!macho_emit_value_to_reg_at(text, fun, value->left, 8, frame_size, scratch_slot, ctx, diag)) return false;
       if (!macho_emit_store_scratch(text, 8, value->left ? value->left->type : IR_TYPE_I32, scratch_slot, value->left, diag)) return false;
       if (!macho_emit_value_to_reg_at(text, fun, value->right, 9, frame_size, scratch_slot + 1, ctx, diag)) return false;
       if (!macho_emit_load_scratch(text, 8, value->left ? value->left->type : IR_TYPE_I32, scratch_slot, value->left, diag)) return false;
-      macho_emit_binary_w(text, value->binary_op, reg, 8, 9);
+      if (value->binary_op == IR_BIN_DIV) {
+        macho_emit_div_w(text, reg, 8, 9, macho_type_is_unsigned(value->type));
+      } else if (value->binary_op == IR_BIN_MOD) {
+        macho_emit_div_w(text, 10, 8, 9, macho_type_is_unsigned(value->type));
+        macho_emit_msub_w(text, reg, 10, 9, 8);
+      } else {
+        macho_emit_binary_w(text, value->binary_op, reg, 8, 9);
+      }
       return true;
     case IR_VALUE_COMPARE: {
       if (!value->left || !value->right) {
