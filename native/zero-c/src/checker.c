@@ -113,9 +113,14 @@ typedef struct {
 typedef struct MetaCache MetaCache;
 
 typedef struct {
+  ZDiag *diag;
+} DiagSink;
+
+typedef struct {
   const Program *program;
   const ZTargetInfo *target;
   MetaCache *meta_cache;
+  DiagSink *diags;
   const Function *function;
   int allow_fallible_call;
   GenericBinding *return_provenance_expr_bindings;
@@ -678,13 +683,23 @@ static bool scope_active_borrows_for_place(Scope *scope, const char *root, const
   return found;
 }
 
-static void set_diag_borrow_trace(ZDiag *diag, const ZBorrowTrace *active, size_t active_len, bool truncated, const char *repair) {
+static ZDiag *diag_sink_target(DiagSink *sink) {
+  return sink ? sink->diag : NULL;
+}
+
+static void diag_sink_borrow_trace(DiagSink *sink, const ZBorrowTrace *active, size_t active_len, bool truncated, const char *repair) {
+  ZDiag *diag = diag_sink_target(sink);
   if (!diag || !active || active_len == 0) return;
   size_t copy_len = active_len > Z_BORROW_TRACE_MAX ? Z_BORROW_TRACE_MAX : active_len;
   for (size_t i = 0; i < copy_len; i++) diag->borrow_traces[i] = active[i];
   diag->borrow_trace_count = copy_len;
   diag->borrow_trace_truncated = truncated || active_len > Z_BORROW_TRACE_MAX;
   snprintf(diag->borrow_repair, sizeof(diag->borrow_repair), "%s", repair ? repair : "end the active lexical borrow before the conflicting operation");
+}
+
+static void set_diag_borrow_trace(ZDiag *diag, const ZBorrowTrace *active, size_t active_len, bool truncated, const char *repair) {
+  DiagSink sink = {.diag = diag};
+  diag_sink_borrow_trace(&sink, active, active_len, truncated, repair);
 }
 
 static void scope_clear_value_provenance_at(ValueProvenance *origins) {
@@ -882,7 +897,9 @@ static void scope_free(Scope *scope) {
   free(scope->value_provenance);
 }
 
-static bool set_diag(ZDiag *diag, int code, const char *message, int line, int column) {
+static bool diag_sink_set(DiagSink *sink, int code, const char *message, int line, int column) {
+  ZDiag *diag = diag_sink_target(sink);
+  if (!diag) return false;
   diag->code = code;
   diag->line = line;
   diag->column = column;
@@ -891,6 +908,25 @@ static bool set_diag(ZDiag *diag, int code, const char *message, int line, int c
   diag->borrow_trace_truncated = false;
   diag->borrow_repair[0] = 0;
   snprintf(diag->message, sizeof(diag->message), "%s", message);
+  return false;
+}
+
+static bool diag_sink_detail(
+  DiagSink *sink,
+  int code,
+  const char *message,
+  int line,
+  int column,
+  const char *expected,
+  const char *actual,
+  const char *help
+) {
+  ZDiag *diag = diag_sink_target(sink);
+  if (!diag) return false;
+  diag_sink_set(sink, code, message, line, column);
+  if (expected) snprintf(diag->expected, sizeof(diag->expected), "%s", expected);
+  if (actual) snprintf(diag->actual, sizeof(diag->actual), "%s", actual);
+  if (help) snprintf(diag->help, sizeof(diag->help), "%s", help);
   return false;
 }
 
@@ -904,11 +940,13 @@ static bool set_diag_detail(
   const char *actual,
   const char *help
 ) {
-  set_diag(diag, code, message, line, column);
-  if (expected) snprintf(diag->expected, sizeof(diag->expected), "%s", expected);
-  if (actual) snprintf(diag->actual, sizeof(diag->actual), "%s", actual);
-  if (help) snprintf(diag->help, sizeof(diag->help), "%s", help);
-  return false;
+  DiagSink sink = {.diag = diag};
+  return diag_sink_detail(&sink, code, message, line, column, expected, actual, help);
+}
+
+static ZDiag *check_context_diag(CheckContext *ctx, ZDiag *fallback) {
+  if (ctx && ctx->diags && ctx->diags->diag) return ctx->diags->diag;
+  return fallback;
 }
 
 static bool is_builtin_value(const char *name) {
@@ -1688,6 +1726,7 @@ static bool check_read_not_mutably_borrowed(const Expr *expr, Scope *scope, ZDia
 }
 
 static bool check_place_index_exprs(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!expr) return true;
   if (expr->kind == EXPR_IDENT) {
     if (!expr->resolved_type) set_expr_resolved_type(expr, expr_type(ctx, program, expr, scope));
@@ -2050,6 +2089,7 @@ static bool validate_recursive_generic_cycle_in_function(CheckContext *ctx, cons
 static bool validate_recursive_generic_cycle_in_expr(CheckContext *ctx, const Program *program, const Function *origin, const Expr *expr, Scope *scope, GenericBinding *context_bindings, size_t context_binding_len, ZDiag *diag, size_t depth, size_t depth_limit);
 
 static bool validate_recursive_generic_cycle_in_stmt_vec(CheckContext *ctx, const Program *program, const Function *origin, const StmtVec *body, Scope *scope, GenericBinding *context_bindings, size_t context_binding_len, ZDiag *diag, size_t depth, size_t depth_limit) {
+  diag = check_context_diag(ctx, diag);
   if (!body || depth > depth_limit) return true;
   for (size_t i = 0; i < body->len; i++) {
     const Stmt *stmt = body->items[i];
@@ -2098,6 +2138,7 @@ static bool validate_recursive_generic_cycle_in_stmt_vec(CheckContext *ctx, cons
 }
 
 static bool validate_recursive_generic_cycle_in_expr(CheckContext *ctx, const Program *program, const Function *origin, const Expr *expr, Scope *scope, GenericBinding *context_bindings, size_t context_binding_len, ZDiag *diag, size_t depth, size_t depth_limit) {
+  diag = check_context_diag(ctx, diag);
   if (!expr || !program || !origin || depth > depth_limit) return true;
   if (expr->kind == EXPR_CALL && expr->left && expr->left->kind == EXPR_IDENT) {
     const Function *callee = find_function(program, expr->left->text);
@@ -2129,6 +2170,7 @@ static bool validate_recursive_generic_cycle_in_expr(CheckContext *ctx, const Pr
 }
 
 static bool validate_recursive_generic_cycle_in_function(CheckContext *ctx, const Program *program, const Function *origin, const Function *callee, GenericBinding *context_bindings, size_t context_binding_len, ZDiag *diag, size_t depth, size_t depth_limit) {
+  diag = check_context_diag(ctx, diag);
   Scope scope = {0};
   recursive_generic_scope_add_function_bindings(callee, context_bindings, context_binding_len, &scope);
   bool ok = validate_recursive_generic_cycle_in_stmt_vec(ctx, program, origin, &callee->body, &scope, context_bindings, context_binding_len, diag, depth, depth_limit);
@@ -2137,6 +2179,7 @@ static bool validate_recursive_generic_cycle_in_function(CheckContext *ctx, cons
 }
 
 static bool validate_recursive_generic_call_bindings(CheckContext *ctx, const Program *program, const Function *fun, const Expr *call, ZDiag *diag, GenericBinding *bindings, size_t binding_len) {
+  diag = check_context_diag(ctx, diag);
   const Function *checking_function = ctx ? ctx->function : NULL;
   if (!checking_function || !function_is_generic(checking_function) || !function_is_generic(fun) || !call) return true;
   if (function_names_match(checking_function, fun)) {
@@ -2492,6 +2535,7 @@ static bool infer_generic_type_from_pattern(const Program *program, const Functi
 }
 
 static bool build_generic_bindings(CheckContext *ctx, const Program *program, const Function *fun, const Expr *call, Scope *scope, ZDiag *diag, GenericBinding *bindings, size_t binding_len, const char *expected_return) {
+  diag = check_context_diag(ctx, diag);
   if (!function_is_generic(fun)) return true;
   const TypeArgVec *type_args = call_type_args(call);
   if (type_args && type_args->len > 0) {
@@ -2623,6 +2667,7 @@ static bool function_error_sets_compatible_inner(CheckContext *ctx, const Functi
 static bool stmt_vec_raise_errors_covered(CheckContext *ctx, const Program *program, const StmtVec *body, const Function *caller, const Function *context_fun, Scope *scope, const Expr *call, ZDiag *diag, size_t depth);
 
 static bool expr_raise_errors_covered(CheckContext *ctx, const Program *program, const Expr *expr, const Function *caller, const Function *context_fun, Scope *scope, const Expr *call, ZDiag *diag, size_t depth) {
+  diag = check_context_diag(ctx, diag);
   if (!expr || depth > 64) return true;
   if (expr->kind == EXPR_CHECK) {
     if (is_builtin_fallible_call(expr->left) && !function_error_sets_include_builtin(caller, diag, call)) return false;
@@ -2662,6 +2707,7 @@ static void flow_scope_add_function_bindings(const Function *fun, Scope *scope) 
 }
 
 static bool stmt_raise_errors_covered(CheckContext *ctx, const Program *program, const Stmt *stmt, const Function *caller, const Function *context_fun, Scope *scope, const Expr *call, ZDiag *diag, size_t depth) {
+  diag = check_context_diag(ctx, diag);
   if (!stmt) return true;
   if (depth > 64) return true;
   if (stmt->kind == STMT_RAISE && stmt->name && !function_error_contains(caller, stmt->name)) {
@@ -2721,6 +2767,7 @@ static bool stmt_raise_errors_covered(CheckContext *ctx, const Program *program,
 }
 
 static bool stmt_vec_raise_errors_covered(CheckContext *ctx, const Program *program, const StmtVec *body, const Function *caller, const Function *context_fun, Scope *scope, const Expr *call, ZDiag *diag, size_t depth) {
+  diag = check_context_diag(ctx, diag);
   if (!body) return true;
   for (size_t i = 0; i < body->len; i++) {
     const Stmt *stmt = body->items[i];
@@ -2731,6 +2778,7 @@ static bool stmt_vec_raise_errors_covered(CheckContext *ctx, const Program *prog
 }
 
 static bool function_error_sets_compatible_inner(CheckContext *ctx, const Function *caller, const Function *callee, ZDiag *diag, const Expr *call, size_t depth) {
+  diag = check_context_diag(ctx, diag);
   if (!caller || !callee || !callee->raises) return true;
   if (depth > 64) return true;
   if (!caller->raises) {
@@ -2759,6 +2807,7 @@ static bool function_error_sets_compatible_inner(CheckContext *ctx, const Functi
 }
 
 static bool function_error_sets_compatible(CheckContext *ctx, const Function *caller, const Function *callee, ZDiag *diag, const Expr *call) {
+  diag = check_context_diag(ctx, diag);
   return function_error_sets_compatible_inner(ctx, caller, callee, diag, call, 0);
 }
 
@@ -2885,6 +2934,7 @@ static bool function_has_error_flow(CheckContext *ctx, const Program *program, c
 }
 
 static bool check_fallible_call_is_checked(CheckContext *ctx, const Program *program, const Function *callee, const Expr *call, ZDiag *diag, const char *message, const char *expected, const char *actual, const char *help) {
+  diag = check_context_diag(ctx, diag);
   if (!function_has_error_flow(ctx, program, callee)) return true;
   if (!ctx || ctx->allow_fallible_call == 0) {
     return set_diag_detail(diag, 1003, message, call->line, call->column, expected, actual, help);
@@ -3294,6 +3344,7 @@ static bool eval_meta_value(CheckContext *ctx, const Program *program, const Exp
 }
 
 static bool check_meta_expr(CheckContext *ctx, const Program *program, const Expr *expr, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   MetaValue value = {0};
   size_t steps = 0;
   if (!eval_meta_value(ctx, program, expr->left, &value, 0, &steps)) {
@@ -3477,6 +3528,7 @@ static char *receiver_self_arg_type(const char *receiver_type, bool requires_mut
 }
 
 static bool build_receiver_shape_method_bindings(CheckContext *ctx, const Program *program, const Shape *shape, const Function *method, const Expr *call, const char *self_arg_type, Scope *scope, ZDiag *diag, GenericBinding **out_bindings, size_t *out_len) {
+  diag = check_context_diag(ctx, diag);
   size_t binding_len = 1 + (shape ? shape->type_params.len : 0);
   GenericBinding *bindings = z_checked_calloc(binding_len, sizeof(GenericBinding));
   bindings[0].name = "Self";
@@ -3568,6 +3620,7 @@ static bool bind_shape_method_from_expected_self(const Program *program, const S
 }
 
 static bool build_shape_method_bindings(CheckContext *ctx, const Program *program, const Shape *shape, const Function *method, const Expr *call, Scope *scope, const char *expected, ZDiag *diag, GenericBinding **out_bindings, size_t *out_len) {
+  diag = check_context_diag(ctx, diag);
   size_t binding_len = 1 + (shape ? shape->type_params.len : 0);
   GenericBinding *bindings = z_checked_calloc(binding_len, sizeof(GenericBinding));
   bindings[0].name = "Self";
@@ -4377,6 +4430,7 @@ static bool type_static_value_mismatch(const Program *program, const char *expec
 }
 
 static bool check_call_callee(CheckContext *ctx, const Program *program, const Expr *callee, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (callee->kind == EXPR_IDENT) {
     if (scope_has(scope, callee->text)) {
       const char *actual = expr_type(ctx, program, callee, scope);
@@ -4402,6 +4456,7 @@ static bool check_call_callee(CheckContext *ctx, const Program *program, const E
 }
 
 static bool check_expr_expected(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag, const char *expected) {
+  diag = check_context_diag(ctx, diag);
   if (!expr) return true;
   if (expr->kind == EXPR_NUMBER) {
     if (is_float_literal_text(expr->text)) return validate_float_literal_for_type(expr, expected, diag);
@@ -5632,6 +5687,7 @@ static bool check_expr_expected(CheckContext *ctx, const Program *program, const
 }
 
 static bool check_expr(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   return check_expr_expected(ctx, program, expr, scope, diag, NULL);
 }
 
@@ -5650,6 +5706,7 @@ static void mark_owned_target_live_if_needed(const Expr *target, Scope *scope, c
 }
 
 static bool check_lvalue_target(CheckContext *ctx, const Program *program, const Expr *target, Scope *scope, ZDiag *diag, char *out_type, size_t out_type_len) {
+  diag = check_context_diag(ctx, diag);
   if (!target || !out_type || out_type_len == 0) {
     return set_diag_detail(diag, 3027, "unsupported assignment target", target ? target->line : 0, target ? target->column : 0, "mutable identifier, shape field, or fixed-array index", "unsupported assignment target", "assign through a mutable local lvalue");
   }
@@ -6356,6 +6413,7 @@ static bool collect_assignment_target_places(const Expr *target, Scope *scope, P
 }
 
 static bool update_borrow_assignment(CheckContext *ctx, const Program *program, const Expr *target, const Expr *value, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   char target_root[128];
   char target_path[256];
   if (!target || !expr_binding_path(target, target_root, sizeof(target_root), target_path, sizeof(target_path)) || !scope_has(scope, target_root)) return true;
@@ -6895,6 +6953,7 @@ static bool function_storage_effect_summary(CheckContext *ctx, const Program *pr
 }
 
 static bool apply_provenance_storage_effect(CheckContext *ctx, const Program *program, const ResolvedProvenanceCall *resolved, const ProvenanceStorageEffect *effect, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!program || !resolved || !resolved->callee || !resolved->call || !effect || !scope) return true;
   size_t param_index = resolved->callee->params.len;
   if (!function_param_index_by_name(resolved->callee, effect->target.root, &param_index)) return true;
@@ -6963,6 +7022,7 @@ static bool apply_provenance_storage_effect(CheckContext *ctx, const Program *pr
 }
 
 static bool apply_provenance_call_storage_effects(CheckContext *ctx, const Program *program, const ResolvedProvenanceCall *resolved, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!program || !resolved || !resolved->callee || !resolved->call || !scope) return true;
   ProvenanceStorageEffectVec effects = {0};
   bool complete = function_storage_effect_summary(ctx, program, resolved->callee, resolved->bindings, resolved->binding_len, &effects);
@@ -6985,6 +7045,7 @@ static bool apply_provenance_call_storage_effects(CheckContext *ctx, const Progr
 }
 
 static bool apply_checked_call_storage_effects(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!program || !expr || expr->kind != EXPR_CALL || !expr->left || !scope) return true;
   ResolvedProvenanceCall resolved = {0};
   if (!resolve_provenance_call(ctx, program, expr, scope, expr_type(ctx, program, expr, scope), ctx ? ctx->function : NULL, ctx ? ctx->return_provenance_expr_bindings : NULL, ctx ? ctx->return_provenance_expr_binding_len : 0, &resolved)) return true;
@@ -6994,10 +7055,12 @@ static bool apply_checked_call_storage_effects(CheckContext *ctx, const Program 
 }
 
 static bool apply_resolved_call_storage_effects(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   return apply_checked_call_storage_effects(ctx, program, expr, scope, diag);
 }
 
 static bool apply_expr_call_storage_effects(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!program || !expr || !scope) return true;
   if (expr->kind == EXPR_RESCUE) {
     if (!apply_expr_call_storage_effects(ctx, program, expr->left, scope, diag)) return false;
@@ -7073,6 +7136,7 @@ static bool check_assignment_not_borrowed(const Expr *target, Scope *scope, ZDia
 }
 
 static bool check_return_borrow_escape(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!expr) return true;
   ValueProvenance origins = {0};
   if (!expr_reference_provenance(ctx, program, expr, scope, &origins)) {
@@ -7093,6 +7157,7 @@ static bool check_return_borrow_escape(CheckContext *ctx, const Program *program
 }
 
 static bool check_return_call_borrow_escape(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!expr || expr->kind != EXPR_CALL || !expr->left) return true;
   ValueProvenance origins = {0};
   if (!call_result_value_provenance(ctx, program, expr, scope, &origins)) {
@@ -7113,6 +7178,7 @@ static bool check_return_call_borrow_escape(CheckContext *ctx, const Program *pr
 }
 
 static bool check_return_reference_escape(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!check_return_call_borrow_escape(ctx, program, expr, scope, diag)) return false;
   return check_return_borrow_escape(ctx, program, expr, scope, diag);
 }
@@ -7168,6 +7234,7 @@ static bool parse_match_int_literal(const char *text, unsigned long long *out) {
 }
 
 static bool check_match_guard(CheckContext *ctx, const Program *program, MatchArm *arm, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   if (!arm->guard) return true;
   if (!check_expr(ctx, program, arm->guard, scope, diag)) return false;
   const char *guard_type = expr_type(ctx, program, arm->guard, scope);
@@ -7176,6 +7243,7 @@ static bool check_match_guard(CheckContext *ctx, const Program *program, MatchAr
 }
 
 static bool check_scalar_match(CheckContext *ctx, const Program *program, const Function *fun, const Stmt *stmt, Scope *scope, ZDiag *diag, int loop_depth, const char *match_type) {
+  diag = check_context_diag(ctx, diag);
   bool is_bool = is_bool_type(match_type);
   bool is_u8 = strcmp(match_type, "u8") == 0;
   bool bool_seen[2] = {false, false};
@@ -7252,6 +7320,7 @@ static bool check_scalar_match(CheckContext *ctx, const Program *program, const 
 }
 
 static bool check_stmt(CheckContext *ctx, const Program *program, const Function *fun, const Stmt *stmt, Scope *scope, ZDiag *diag, int loop_depth) {
+  diag = check_context_diag(ctx, diag);
   if (stmt->kind == STMT_LET) {
     for (size_t i = 0; i < scope->len; i++) {
       if (strcmp(scope->names[i], stmt->name) == 0) {
@@ -7511,6 +7580,7 @@ static bool check_stmt(CheckContext *ctx, const Program *program, const Function
 }
 
 static bool check_stmt_vec_with_loop(CheckContext *ctx, const Program *program, const Function *fun, const StmtVec *body, Scope *scope, ZDiag *diag, int loop_depth) {
+  diag = check_context_diag(ctx, diag);
   for (size_t i = 0; i < body->len; i++) {
     if (!check_stmt(ctx, program, fun, body->items[i], scope, diag, loop_depth)) return false;
   }
@@ -7518,6 +7588,7 @@ static bool check_stmt_vec_with_loop(CheckContext *ctx, const Program *program, 
 }
 
 static bool check_stmt_vec(CheckContext *ctx, const Program *program, const Function *fun, const StmtVec *body, Scope *scope, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   return check_stmt_vec_with_loop(ctx, program, fun, body, scope, diag, 0);
 }
 
@@ -7575,6 +7646,7 @@ static bool validate_drop_method(const Shape *shape, const Function *method, ZDi
 }
 
 static bool check_shape_method_body(CheckContext *ctx, const Program *program, const Shape *shape, const Function *method, ZDiag *diag) {
+  diag = check_context_diag(ctx, diag);
   Scope scope = {0};
   size_t binding_len = 1 + shape->type_params.len;
   GenericBinding *bindings = z_checked_calloc(binding_len, sizeof(GenericBinding));
@@ -7937,7 +8009,8 @@ static bool validate_c_imports(const Program *program, ZDiag *diag) {
 
 bool z_check_program(const Program *program, ZDiag *diag) {
   meta_cache_free(&default_meta_cache);
-  CheckContext check_ctx = {.program = program, .target = check_context_target(NULL), .meta_cache = &default_meta_cache};
+  DiagSink diag_sink = {.diag = diag};
+  CheckContext check_ctx = {.program = program, .target = check_context_target(NULL), .meta_cache = &default_meta_cache, .diags = &diag_sink};
   CheckContext *ctx = &check_ctx;
   const Function *main_fun = NULL;
   bool has_test = false;
