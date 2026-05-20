@@ -1149,6 +1149,71 @@ assert.notEqual(shapeMethodStaticUnsupportedTypeJson.code, 0);
 const shapeMethodStaticUnsupportedTypeBody = JSON.parse(shapeMethodStaticUnsupportedTypeJson.stdout);
 assert.equal(shapeMethodStaticUnsupportedTypeBody.diagnostics[0].code, "STC001");
 
+const duplicateStaticGenericFixtures = [
+  {
+    name: "function-duplicate-static-param",
+    message: /duplicate generic parameter/,
+    source: `fun id<static N: usize, static N: usize>() -> u8 {
+    return 1
+}
+
+pub fun main() -> Void {
+}
+`,
+  },
+  {
+    name: "interface-duplicate-static-param",
+    message: /duplicate generic parameter/,
+    source: `interface Bad<static N: usize, static N: usize> {
+    fun value() -> u8
+}
+
+pub fun main() -> Void {
+}
+`,
+  },
+  {
+    name: "shape-method-duplicate-static-param",
+    message: /duplicate generic parameter/,
+    source: `shape Box {
+    value: u8,
+
+    fun value<static N: usize, static N: usize>(self: ref<Self>) -> u8 {
+        return self.value
+    }
+}
+
+pub fun main() -> Void {
+}
+`,
+  },
+  {
+    name: "shape-method-static-shadows-shape-static",
+    message: /shadows outer generic parameter/,
+    source: `shape Box<static N: usize> {
+    value: [N]u8,
+
+    fun len<static N: usize>(self: ref<Self>) -> usize {
+        return N
+    }
+}
+
+pub fun main() -> Void {
+}
+`,
+  },
+];
+
+for (const fixtureCase of duplicateStaticGenericFixtures) {
+  const fixture = `${outDir}/${fixtureCase.name}.0`;
+  await writeFile(fixture, fixtureCase.source);
+  const duplicateStaticJson = await execFileAsync(zero, ["check", "--json", fixture]).catch((error) => error);
+  assert.notEqual(duplicateStaticJson.code, 0);
+  const duplicateStaticBody = JSON.parse(duplicateStaticJson.stdout);
+  assert.equal(duplicateStaticBody.diagnostics[0].code, "NAM004");
+  assert.match(duplicateStaticBody.diagnostics[0].message, fixtureCase.message);
+}
+
 for (const value of ["4_", "M"]) {
   const fixture = `${outDir}/interface-static-constraint-${value.replace(/[^A-Za-z0-9]/g, "_")}.0`;
   await writeFile(fixture, `interface First<T, static N: usize> {

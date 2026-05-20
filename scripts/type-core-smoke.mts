@@ -68,6 +68,18 @@ static void expect_invalid_type(const char *source) {
   z_type_arena_free(&arena);
 }
 
+static void expect_invalid_type_offset(const char *source, size_t offset) {
+  ZTypeArena arena;
+  z_type_arena_init(&arena);
+  ZTypeId type = Z_TYPE_ID_INVALID;
+  ZTypeParseError error = {0};
+  int ok = z_type_parse(&arena, source, &type, &error);
+  expect(!ok && type == Z_TYPE_ID_INVALID && error.message[0] != 0, "invalid type parsed successfully");
+  expect(error.offset == offset, "invalid type reported wrong offset");
+  expect(arena.len == 0, "failed type parse mutated arena");
+  z_type_arena_free(&arena);
+}
+
 static void expect_invalid_static(const char *source) {
   ZStaticValue value = {0};
   ZTypeParseError error = {0};
@@ -164,6 +176,8 @@ int main(void) {
   expect_invalid_type("[4__5]u8");
   expect_invalid_type("[0x_1]u8");
   expect_invalid_type("FixedVec<u8,4_nope>");
+  expect_invalid_type_offset("FixedVec<u8,4_>", 12);
+  expect_invalid_type_offset("[4_]u8", 1);
 
   expect_invalid_static("");
   expect_invalid_static("Mode.");

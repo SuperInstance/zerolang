@@ -326,6 +326,8 @@ char *z_static_value_format(const ZStaticValue *value) {
   return type_strdup(value->text ? value->text : "");
 }
 
+static bool parser_parse_static_value(TypeParser *parser, const char *text, size_t start, ZStaticValue *out);
+
 static bool parser_static_until(TypeParser *parser, char delimiter, ZStaticValue *out) {
   parser_skip_ws(parser);
   size_t start = parser->cursor;
@@ -342,13 +344,22 @@ static bool parser_static_until(TypeParser *parser, char delimiter, ZStaticValue
     return false;
   }
   char *text = trimmed_copy(parser->text + start, parser->cursor - start);
-  bool ok = z_static_value_parse(text, out, parser->error);
-  if (!ok && parser->error && !parser->error->offset) parser->error->offset = start;
+  bool ok = parser_parse_static_value(parser, text, start, out);
   free(text);
   return ok;
 }
 
 static bool parse_type(TypeParser *parser, ZTypeArena *arena, ZTypeId *out);
+
+static bool parser_parse_static_value(TypeParser *parser, const char *text, size_t start, ZStaticValue *out) {
+  ZTypeParseError static_error = {0};
+  bool ok = z_static_value_parse(text, out, &static_error);
+  if (!ok && parser && parser->error) {
+    *parser->error = static_error;
+    parser->error->offset = start + static_error.offset;
+  }
+  return ok;
+}
 
 static bool parse_type_arg(TypeParser *parser, ZTypeArena *arena, ZTypeArg *out) {
   parser_skip_ws(parser);
@@ -359,7 +370,7 @@ static bool parse_type_arg(TypeParser *parser, ZTypeArena *arena, ZTypeArg *out)
     ZStaticValue value = {0};
     while (parser->text[parser->cursor] && parser->text[parser->cursor] != ',' && parser->text[parser->cursor] != '>') parser->cursor++;
     char *text = trimmed_copy(parser->text + start, parser->cursor - start);
-    bool ok = z_static_value_parse(text, &value, parser->error);
+    bool ok = parser_parse_static_value(parser, text, start, &value);
     free(text);
     if (!ok) return false;
     *out = (ZTypeArg){.kind = Z_TYPE_ARG_STATIC, .as.static_value = value};
@@ -378,7 +389,7 @@ static bool parse_type_arg(TypeParser *parser, ZTypeArena *arena, ZTypeArg *out)
   while (parser->text[parser->cursor] && parser->text[parser->cursor] != ',' && parser->text[parser->cursor] != '>') parser->cursor++;
   char *text = trimmed_copy(parser->text + start, parser->cursor - start);
   ZStaticValue value = {0};
-  bool ok = z_static_value_parse(text, &value, parser->error);
+  bool ok = parser_parse_static_value(parser, text, start, &value);
   free(text);
   if (!ok) return false;
   *out = (ZTypeArg){.kind = Z_TYPE_ARG_STATIC, .as.static_value = value};

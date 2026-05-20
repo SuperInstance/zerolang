@@ -7937,17 +7937,45 @@ static const char *visible_concrete_type_name_kind(const Program *program, const
   return NULL;
 }
 
+static bool validate_type_param_names_unique(const ParamVec *params, ZDiag *diag) {
+  if (!params) return true;
+  for (size_t i = 0; i < params->len; i++) {
+    const Param *param = &params->items[i];
+    if (!param->name) continue;
+    for (size_t previous = 0; previous < i; previous++) {
+      const Param *existing = &params->items[previous];
+      if (!existing->name || strcmp(existing->name, param->name) != 0) continue;
+      return set_diag_detail(diag, 3008, "duplicate generic parameter", param->line, param->column, "unique generic parameter name", param->name, "rename one generic parameter");
+    }
+  }
+  return true;
+}
+
 static bool validate_type_param_names_do_not_shadow(const Program *program, const ParamVec *params, const ParamVec *outer_params, ZDiag *diag) {
   if (!params) return true;
   for (size_t i = 0; i < params->len; i++) {
     const Param *param = &params->items[i];
-    if (param->is_static || !param->name) continue;
+    if (!param->name) continue;
+    if (outer_params && param->is_static) {
+      for (size_t previous = 0; previous < outer_params->len; previous++) {
+        const Param *outer = &outer_params->items[previous];
+        if (!outer->name || strcmp(outer->name, param->name) != 0) continue;
+        char actual[160];
+        snprintf(actual, sizeof(actual), "generic parameter '%s' already exists in the outer generic scope", param->name);
+        return set_diag_detail(diag, 3008, "generic parameter shadows outer generic parameter", param->line, param->column, "distinct generic parameter name", actual, "rename the inner generic parameter");
+      }
+    }
+    if (param->is_static) continue;
     if (outer_params) {
       for (size_t previous = 0; previous < outer_params->len; previous++) {
         const Param *outer = &outer_params->items[previous];
-        if (outer->is_static || !outer->name) continue;
+        if (!outer->name) continue;
         if (strcmp(outer->name, param->name) == 0) {
           char actual[160];
+          if (outer->is_static) {
+            snprintf(actual, sizeof(actual), "generic parameter '%s' already exists in the outer generic scope", param->name);
+            return set_diag_detail(diag, 3008, "generic parameter shadows outer generic parameter", param->line, param->column, "distinct generic parameter name", actual, "rename the inner generic parameter");
+          }
           snprintf(actual, sizeof(actual), "type parameter '%s' already exists in the outer generic scope", param->name);
           return set_diag_detail(diag, 3008, "generic type parameter shadows outer type parameter", param->line, param->column, "distinct generic type parameter name", actual, "rename the inner generic parameter");
         }
@@ -8077,6 +8105,7 @@ static bool validate_interface_decl(const Program *program, const InterfaceDecl 
       return set_diag_detail(diag, 3008, "duplicate interface declaration", interface->line, interface->column, "unique interface name", "interface name already declared", "rename one interface");
     }
   }
+  if (!validate_type_param_names_unique(&interface->type_params, diag)) return false;
   if (!validate_type_param_names_do_not_shadow(program, &interface->type_params, NULL, diag)) return false;
   if (!validate_static_type_param_decls(program, &interface->type_params, diag)) return false;
   for (size_t method_index = 0; method_index < interface->methods.len; method_index++) {
@@ -8084,6 +8113,7 @@ static bool validate_interface_decl(const Program *program, const InterfaceDecl 
     if (method->body.len > 0) {
       return set_diag_detail(diag, 3038, "interface methods cannot have bodies", method->line, method->column, "method signature only", "method body", "move implementation to a concrete shape static method");
     }
+    if (!validate_type_param_names_unique(&method->type_params, diag)) return false;
     if (!validate_type_param_names_do_not_shadow(program, &method->type_params, &interface->type_params, diag)) return false;
     if (!validate_static_type_param_decls(program, &method->type_params, diag)) return false;
     if (!validate_type_form(method->return_type, diag, method->line, method->column)) return false;
@@ -8239,6 +8269,7 @@ bool z_check_program(const Program *program, ZDiag *diag) {
     if (!validate_shape_layout(&program->shapes.items[i], diag)) return false;
     for (size_t method_index = 0; method_index < program->shapes.items[i].methods.len; method_index++) {
       Function *method = &program->shapes.items[i].methods.items[method_index];
+      if (!validate_type_param_names_unique(&method->type_params, diag)) return false;
       if (!validate_type_param_names_do_not_shadow(program, &method->type_params, &program->shapes.items[i].type_params, diag)) return false;
       if (!validate_static_type_param_decls(program, &method->type_params, diag)) return false;
       if (!validate_shape_method_type_form(method->return_type, diag, method->line, method->column)) return false;
@@ -8300,6 +8331,7 @@ bool z_check_program(const Program *program, ZDiag *diag) {
     }
     if (strcmp(fun->name, "main") == 0) main_fun = fun;
     if (fun->is_test) has_test = true;
+    if (!validate_type_param_names_unique(&fun->type_params, diag)) return false;
     if (!validate_type_param_names_do_not_shadow(program, &fun->type_params, NULL, diag)) return false;
     if (!validate_type_form(fun->return_type, diag, fun->line, fun->column)) return false;
     if (!validate_type_names(program, fun->return_type, &fun->type_params, NULL, false, diag, fun->line, fun->column)) return false;
