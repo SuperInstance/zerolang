@@ -3798,6 +3798,11 @@ static bool build_receiver_shape_method_bindings(CheckContext *ctx, const Progra
       return set_diag_detail(diag, 3046, "generic receiver method arguments cannot be inferred", call->line, call->column, "explicit shape method arguments or concrete receiver", actual, "call the method on a concrete receiver or pass explicit method type arguments");
     }
   }
+  if (!validate_generic_constraints(program, method, call, diag, bindings, binding_len)) {
+    generic_bindings_free(bindings, binding_len);
+    free(bindings);
+    return false;
+  }
   *out_bindings = bindings;
   *out_len = binding_len;
   return true;
@@ -3898,6 +3903,11 @@ static bool build_shape_method_bindings(CheckContext *ctx, const Program *progra
       free(bindings);
       return set_diag_detail(diag, 3046, "generic shape method arguments cannot be inferred", call->line, call->column, "explicit shape method arguments or concrete Self argument", actual, "pass a concrete self argument or explicit method type arguments");
     }
+  }
+  if (!validate_generic_constraints(program, method, call, diag, bindings, binding_len)) {
+    generic_bindings_free(bindings, binding_len);
+    free(bindings);
+    return false;
   }
   *out_bindings = bindings;
   *out_len = binding_len;
@@ -4043,6 +4053,11 @@ static bool build_constrained_interface_method_bindings(CheckContext *ctx, const
   }
 
   if (!finish_type_param_bindings(program, &method->type_params, method_offset, bindings, call, diag, "generic interface method arguments cannot be inferred", "pass explicit method type arguments or make them inferable from the constrained call")) {
+    generic_bindings_free(bindings, binding_len);
+    free(bindings);
+    return false;
+  }
+  if (!validate_generic_constraints(program, method, call, diag, bindings, binding_len)) {
     generic_bindings_free(bindings, binding_len);
     free(bindings);
     return false;
@@ -8061,7 +8076,7 @@ static bool validate_static_type_param_decls(const Program *program, const Param
   return true;
 }
 
-static bool validate_type_param_constraints(const Program *program, const Function *fun, ZDiag *diag) {
+static bool validate_type_param_constraints_in_scope(const Program *program, const Function *fun, const ParamVec *outer_params, ZDiag *diag) {
   if (!fun) return true;
   for (size_t i = 0; i < fun->type_params.len; i++) {
     const Param *param = &fun->type_params.items[i];
@@ -8088,7 +8103,7 @@ static bool validate_type_param_constraints(const Program *program, const Functi
           return set_diag_detail(diag, 3043, "static value parameter type is not supported", interface_param->line, interface_param->column, "integer, Bool, or enum static parameter", static_type, "use a concrete integer, Bool, or enum type for this static parameter");
         }
         char *canonical = canonical_static_arg_for_type(program, args[arg_index], static_type);
-        bool ok = canonical || static_type_param_name_known_for_type(program, &fun->type_params, NULL, args[arg_index], static_type);
+        bool ok = canonical || static_type_param_name_known_for_type(program, &fun->type_params, outer_params, args[arg_index], static_type);
         free(canonical);
         if (!ok) {
           char actual[160];
@@ -8098,7 +8113,7 @@ static bool validate_type_param_constraints(const Program *program, const Functi
         }
         continue;
       }
-      if (!validate_type_names(program, args[arg_index], &fun->type_params, NULL, false, diag, param->line, param->column)) {
+      if (!validate_type_names(program, args[arg_index], &fun->type_params, outer_params, false, diag, param->line, param->column)) {
         free_type_arg_list(args, arg_len);
         return false;
       }
@@ -8106,6 +8121,10 @@ static bool validate_type_param_constraints(const Program *program, const Functi
     free_type_arg_list(args, arg_len);
   }
   return true;
+}
+
+static bool validate_type_param_constraints(const Program *program, const Function *fun, ZDiag *diag) {
+  return validate_type_param_constraints_in_scope(program, fun, NULL, diag);
 }
 
 static bool is_builtin_type_name(const char *name) {
@@ -8355,6 +8374,7 @@ static bool validate_interface_decl(const Program *program, const InterfaceDecl 
     if (!validate_type_param_names_unique(&method->type_params, diag)) return false;
     if (!validate_type_param_names_do_not_shadow(program, &method->type_params, &interface->type_params, diag)) return false;
     if (!validate_static_type_param_decls(program, &method->type_params, diag)) return false;
+    if (!validate_type_param_constraints_in_scope(program, method, &interface->type_params, diag)) return false;
     if (!validate_type_form(method->return_type, diag, method->line, method->column)) return false;
     if (!validate_type_names(program, method->return_type, &interface->type_params, &method->type_params, true, diag, method->line, method->column)) return false;
     if (!validate_function_error_set(method, diag)) return false;
@@ -8511,6 +8531,7 @@ bool z_check_program(const Program *program, ZDiag *diag) {
       if (!validate_type_param_names_unique(&method->type_params, diag)) return false;
       if (!validate_type_param_names_do_not_shadow(program, &method->type_params, &program->shapes.items[i].type_params, diag)) return false;
       if (!validate_static_type_param_decls(program, &method->type_params, diag)) return false;
+      if (!validate_type_param_constraints_in_scope(program, method, &program->shapes.items[i].type_params, diag)) return false;
       if (!validate_shape_method_type_form(method->return_type, diag, method->line, method->column)) return false;
       if (!validate_type_names(program, method->return_type, &program->shapes.items[i].type_params, &method->type_params, true, diag, method->line, method->column)) return false;
       for (size_t param_index = 0; param_index < method->params.len; param_index++) {
