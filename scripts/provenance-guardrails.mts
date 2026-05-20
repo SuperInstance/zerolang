@@ -253,6 +253,8 @@ const requiredFunctions = [
   "choice_constructor_value_provenance",
   "register_match_payload_binding_provenance",
   "apply_checked_call_storage_effects",
+  "check_named_function_call_expected",
+  "check_stdlib_table_arg_range_expected",
   "call_resolution_record_bindings",
   "call_resolution_record_param_facts",
   "call_resolution_param_type_text",
@@ -301,6 +303,17 @@ assertIncludes("call result provenance", callResultBody, "function_return_value_
 assertIncludes("call result provenance", callResultBody, "instantiate_call_provenance_entry");
 assertIncludes("call result provenance", callResultBody, "resolved_call_param_type_text");
 
+const namedCallBody = sliceBetween(checker, "static bool check_named_function_call_expected", "static bool check_expr_expected");
+assertIncludes("named call checking argument facts", namedCallBody, "resolve_named_function_call");
+assertIncludes("named call checking argument facts", namedCallBody, "call_resolution_record_param_facts");
+assertIncludes("named call checking argument facts", namedCallBody, "call_resolution_param_type_text");
+assertIncludes("named call checking storage effects", namedCallBody, "apply_checked_call_storage_effects");
+
+const stdlibTableCallBody = sliceBetween(checker, "static bool check_stdlib_table_arg_range_expected", "static bool check_expr_expected");
+assertIncludes("stdlib table call checking argument facts", stdlibTableCallBody, "z_call_resolution_add_arg");
+assertIncludes("stdlib table call checking argument facts", stdlibTableCallBody, "call_resolution_param_type_text");
+assertIncludes("stdlib table call checking argument facts", stdlibTableCallBody, "std_call_arg_type");
+
 const checkCallBody = sliceBetween(checker, "static bool check_expr_expected", "case EXPR_CAST");
 assertIncludes("call checking argument facts", checkCallBody, "call_resolution_record_param_facts");
 assertIncludes("call checking argument facts", checkCallBody, "call_resolution_param_type_text");
@@ -317,6 +330,9 @@ assertIncludes("function provenance summary", summaryBody, "provenance_storage_e
 assertIncludes("function provenance summary", summaryBody, "return summary->return_complete && summary->effect_complete");
 assertIncludes("choice type provenance", checker, "const Choice *choice = find_choice(program, type)");
 assertIncludes("choice constructor provenance", checker, "choice_constructor_value_provenance(ctx, program, expr, scope, origins)");
+const choiceConstructorBody = sliceBetween(checker, "static bool choice_constructor_value_provenance", "static void register_match_payload_binding_provenance");
+assertIncludes("choice constructor provenance", choiceConstructorBody, "resolve_choice_constructor_call");
+assertIncludes("choice constructor provenance", choiceConstructorBody, "z_call_resolution_add_arg");
 assertIncludes("choice match payload provenance", checker, "register_match_payload_binding_provenance(ctx, program, stmt->expr, scope, &arm_scope, arm->payload_name, arm->case_name)");
 
 const storageSummaryBody = sliceBetween(checker, "static bool function_storage_effect_summary", "static bool apply_provenance_storage_effect");
@@ -337,9 +353,13 @@ const checkExprExpectedBody = sliceBetween(
   "static bool check_expr(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {"
 );
 const callCase = sliceBetween(checkExprExpectedBody, "case EXPR_CALL:", "case EXPR_CAST:");
+assertIncludes("call checking stdlib table facts", callCase, "check_stdlib_table_arg_range_expected");
+assertIncludes("call checking choice argument facts", callCase, "z_call_resolution_add_arg(&choice_resolution");
+assertIncludes("call checking choice argument facts", callCase, "call_resolution_param_type_text(&choice_resolution");
 const callCaseStorageApplications = (callCase.match(/apply_checked_call_storage_effects\(ctx, program, expr, scope, diag\)/g) ?? []).length;
-if (callCaseStorageApplications < 5) {
-  fail(`EXPR_CALL provenance: expected storage-effect application for all user call forms, found ${callCaseStorageApplications}`);
+const namedCallStorageApplications = (namedCallBody.match(/apply_checked_call_storage_effects\(ctx, program, expr, scope, diag\)/g) ?? []).length;
+if (callCaseStorageApplications + namedCallStorageApplications < 4) {
+  fail(`EXPR_CALL provenance: expected storage-effect application for all user call forms, found ${callCaseStorageApplications + namedCallStorageApplications}`);
 }
 
 const lines = checker.split("\n");

@@ -5630,6 +5630,164 @@ static bool check_call_callee(CheckContext *ctx, const Program *program, const E
   return check_expr(ctx, program, callee, scope, diag);
 }
 
+static bool check_named_function_call_expected(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag, const char *expected, bool *handled) {
+  diag = check_context_diag(ctx, diag);
+  if (handled) *handled = false;
+  if (!expr || expr->kind != EXPR_CALL || !expr->left || expr->left->kind != EXPR_IDENT) return true;
+  ZCallResolution resolution = {0};
+  if (!resolve_named_function_call(program, expr, &resolution)) return true;
+  if (handled) *handled = true;
+  const Function *fun = resolution.callee;
+  bool generic = function_is_generic(fun);
+  if (fun->params.len != expr->args.len) {
+    char message[256];
+    snprintf(message, sizeof(message), "function '%s' expects %zu argument(s), got %zu", fun->name, fun->params.len, expr->args.len);
+    z_call_resolution_free(&resolution);
+    return set_diag_detail(diag, 3004, message, expr->line, expr->column, "matching argument count", "wrong argument count", "update the call or function signature");
+  }
+  const TypeArgVec *type_args = resolution.type_args;
+  if (!generic && type_args && type_args->len > 0) {
+    z_call_resolution_free(&resolution);
+    return set_diag_detail(diag, 3032, "non-generic function cannot take type arguments", expr->line, expr->column, "call without <...>", "type arguments on non-generic function", "remove the explicit type arguments or make the function generic");
+  }
+
+  GenericBinding *bindings = NULL;
+  size_t binding_len = 0;
+  if (generic) {
+    binding_len = fun->type_params.len;
+    bindings = z_checked_calloc(binding_len, sizeof(GenericBinding));
+    generic_bindings_init_from_params(bindings, &fun->type_params, 0);
+    if (!build_generic_bindings(ctx, program, fun, expr, scope, diag, bindings, binding_len, expected)) {
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+    if (!validate_recursive_generic_call_bindings(ctx, program, fun, expr, diag, bindings, binding_len)) {
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+    if (!validate_generic_constraints(program, fun, expr, diag, bindings, binding_len)) {
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+  }
+  call_resolution_record_bindings(&resolution, bindings, binding_len);
+  call_resolution_record_param_facts(ctx, program, fun, expr, NULL, 0, scope, bindings, binding_len, &resolution);
+
+  for (size_t i = 0; i < expr->args.len; i++) {
+    char *expected_type = call_resolution_param_type_text(&resolution, i);
+    if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected_type)) {
+      free(expected_type);
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+    const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
+    if (!types_compatible_in_scope(program, scope, expected_type, actual)) {
+      char message[256];
+      snprintf(message, sizeof(message), generic ? "argument %zu to generic '%s' has incompatible type" : "argument %zu to '%s' has incompatible type", i + 1, fun->name);
+      bool ok = generic && type_static_value_mismatch(program, expected_type, actual)
+        ? set_diag_detail(diag, 3045, "static value argument does not match the annotated value", expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, "pass the same static value or remove the conflicting explicit argument")
+        : set_diag_detail(diag, 3005, message, expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, generic ? "pass a value matching the resolved generic parameter" : "pass a compatible value");
+      free(expected_type);
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return ok;
+    }
+    mark_owned_move_if_needed(expr->args.items[i], scope, expected_type);
+    free(expected_type);
+  }
+
+  if (generic && function_has_error_flow(ctx, program, fun)) {
+    char actual[160];
+    snprintf(actual, sizeof(actual), "call to '%s'", fun->name);
+    if (!check_fallible_call_is_checked(ctx, program, fun, expr, diag, "fallible generic function call must be checked", "check fallible_call(...)", actual, "prefix the call with check in a function marked raises")) {
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+  }
+
+  char *return_type = generic
+    ? type_substitute_generic_signature(program, fun->return_type, bindings, binding_len)
+    : z_strdup(fun->return_type ? fun->return_type : "Void");
+  if (generic) set_expr_resolved_type(expr, return_type);
+  if (!apply_checked_call_storage_effects(ctx, program, expr, scope, diag)) {
+    free(return_type);
+    generic_bindings_free(bindings, binding_len);
+    free(bindings);
+    z_call_resolution_free(&resolution);
+    return false;
+  }
+  if (!generic && function_has_error_flow(ctx, program, fun)) {
+    char actual[160];
+    snprintf(actual, sizeof(actual), "call to '%s'", fun->name);
+    if (!check_fallible_call_is_checked(ctx, program, fun, expr, diag, "fallible function call must be checked", "check fallible_call(...)", actual, "prefix the call with check in a function marked raises")) {
+      free(return_type);
+      generic_bindings_free(bindings, binding_len);
+      free(bindings);
+      z_call_resolution_free(&resolution);
+      return false;
+    }
+  }
+  if (!expr->resolved_type) set_expr_resolved_type(expr, return_type);
+  free(return_type);
+  generic_bindings_free(bindings, binding_len);
+  free(bindings);
+  z_call_resolution_free(&resolution);
+  return true;
+}
+
+static bool check_stdlib_table_arg_range_expected(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag, const char *name, size_t start_index, bool allow_span_array_arg, ZCallResolution *resolution) {
+  diag = check_context_diag(ctx, diag);
+  if (!expr || !name) return true;
+  for (size_t i = start_index; i < expr->args.len; i++) {
+    const char *raw_expected = std_call_arg_type(name, i);
+    const char *initial_actual = expr_type(ctx, program, expr->args.items[i], scope);
+    if (resolution) z_call_resolution_add_arg(resolution, i, expr->args.items[i], raw_expected, initial_actual);
+    char *expected_type = resolution ? call_resolution_param_type_text(resolution, i) : z_strdup(raw_expected ? raw_expected : "Unknown");
+    if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, raw_expected ? expected_type : NULL)) {
+      free(expected_type);
+      return false;
+    }
+    const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
+    if (expr->args.items[i]->kind == EXPR_IDENT) {
+      const char *scope_actual = scope_type(scope, expr->args.items[i]->text);
+      if (scope_actual) actual = scope_actual;
+    }
+    if (resolution) z_call_resolution_add_arg(resolution, i, expr->args.items[i], raw_expected ? expected_type : NULL, actual);
+    bool span_array_arg = false;
+    bool expected_span = raw_expected && type_is_named_generic(expected_type, "Span");
+    bool expected_mut_span = raw_expected && type_is_named_generic(expected_type, "MutSpan");
+    bool inline_array_literal = expr->args.items[i] && expr->args.items[i]->kind == EXPR_ARRAY_LITERAL;
+    if (allow_span_array_arg && raw_expected && actual && actual[0] == '[' && (expected_span || (expected_mut_span && !inline_array_literal))) {
+      char expected_element[128];
+      char actual_element[128];
+      if (span_element_text(expected_type, expected_element, sizeof(expected_element)) &&
+          fixed_array_type_parts(actual, NULL, 0, actual_element, sizeof(actual_element))) {
+        span_array_arg = types_compatible_in_scope(program, scope, expected_element, actual_element);
+      }
+    }
+    if (raw_expected && !span_array_arg && !types_compatible_in_scope(program, scope, expected_type, actual)) {
+      char message[256];
+      snprintf(message, sizeof(message), "argument %zu to '%s' has incompatible type", i + 1, name);
+      bool ok = set_diag_detail(diag, 3012, message, expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, "pass a compatible value");
+      free(expected_type);
+      return ok;
+    }
+    free(expected_type);
+  }
+  return true;
+}
+
 static bool check_expr_expected(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag, const char *expected) {
   diag = check_context_diag(ctx, diag);
   if (!expr) return true;
@@ -5927,18 +6085,23 @@ static bool check_expr_expected(CheckContext *ctx, const Program *program, const
             return set_diag_detail(diag, 3108, "choice payload arity mismatch", expr->line, expr->column, expected_count ? "one payload argument" : "no payload arguments", "wrong payload argument count", "add or remove the payload argument");
           }
           for (size_t i = 0; i < expr->args.len; i++) {
-            if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, item_case->type)) {
+            z_call_resolution_add_arg(&choice_resolution, i, expr->args.items[i], item_case->type, expr_type(ctx, program, expr->args.items[i], scope));
+            char *expected_type = call_resolution_param_type_text(&choice_resolution, i);
+            if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected_type)) {
+              free(expected_type);
               z_call_resolution_free(&choice_resolution);
               return false;
             }
-            mark_owned_move_if_needed(expr->args.items[i], scope, item_case->type);
-          }
-          if (item_case->type && expr->args.len == 1) {
-            const char *actual = expr_type(ctx, program, expr->args.items[0], scope);
-            if (!types_compatible_in_scope(program, scope, item_case->type, actual)) {
+            const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
+            z_call_resolution_add_arg(&choice_resolution, i, expr->args.items[i], expected_type, actual);
+            if (!types_compatible_in_scope(program, scope, expected_type, actual)) {
+              bool ok = set_diag_detail(diag, 3109, "choice payload type mismatch", expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, "pass a payload value of the declared case type");
+              free(expected_type);
               z_call_resolution_free(&choice_resolution);
-              return set_diag_detail(diag, 3109, "choice payload type mismatch", expr->args.items[0]->line, expr->args.items[0]->column, item_case->type, actual, "pass a payload value of the declared case type");
+              return ok;
             }
+            mark_owned_move_if_needed(expr->args.items[i], scope, expected_type);
+            free(expected_type);
           }
           z_call_resolution_free(&choice_resolution);
           return true;
@@ -6242,108 +6405,11 @@ static bool check_expr_expected(CheckContext *ctx, const Program *program, const
         }
       }
       if (!check_call_callee(ctx, program, expr, scope, diag)) return false;
-      if (expr->left && expr->left->kind == EXPR_IDENT) {
-        const Function *fun = find_function(program, expr->left->text);
-        if (fun && fun->params.len != expr->args.len) {
-          char message[256];
-          snprintf(message, sizeof(message), "function '%s' expects %zu argument(s), got %zu", fun->name, fun->params.len, expr->args.len);
-          return set_diag_detail(diag, 3004, message, expr->line, expr->column, "matching argument count", "wrong argument count", "update the call or function signature");
-        }
-        const TypeArgVec *type_args = call_type_args(expr);
-        if (fun && !function_is_generic(fun) && type_args && type_args->len > 0) {
-          return set_diag_detail(diag, 3032, "non-generic function cannot take type arguments", expr->line, expr->column, "call without <...>", "type arguments on non-generic function", "remove the explicit type arguments or make the function generic");
-        }
-        if (fun && function_is_generic(fun)) {
-          GenericBinding *bindings = z_checked_calloc(fun->type_params.len, sizeof(GenericBinding));
-          generic_bindings_init_from_params(bindings, &fun->type_params, 0);
-          if (!build_generic_bindings(ctx, program, fun, expr, scope, diag, bindings, fun->type_params.len, expected)) {
-            generic_bindings_free(bindings, fun->type_params.len);
-            free(bindings);
-            return false;
-          }
-          if (!validate_recursive_generic_call_bindings(ctx, program, fun, expr, diag, bindings, fun->type_params.len)) {
-            generic_bindings_free(bindings, fun->type_params.len);
-            free(bindings);
-            return false;
-          }
-          if (!validate_generic_constraints(program, fun, expr, diag, bindings, fun->type_params.len)) {
-            generic_bindings_free(bindings, fun->type_params.len);
-            free(bindings);
-            return false;
-          }
-          for (size_t i = 0; i < expr->args.len; i++) {
-            char *expected_type = i < fun->params.len ? type_substitute_generic_signature(program, fun->params.items[i].type, bindings, fun->type_params.len) : z_strdup("Unknown");
-            if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected_type)) {
-              free(expected_type);
-              generic_bindings_free(bindings, fun->type_params.len);
-              free(bindings);
-              return false;
-            }
-            const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
-            if (!types_compatible_in_scope(program, scope, expected_type, actual)) {
-              char message[256];
-              snprintf(message, sizeof(message), "argument %zu to generic '%s' has incompatible type", i + 1, fun->name);
-              bool ok = type_static_value_mismatch(program, expected_type, actual)
-                ? set_diag_detail(diag, 3045, "static value argument does not match the annotated value", expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, "pass the same static value or remove the conflicting explicit argument")
-                : set_diag_detail(diag, 3005, message, expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual, "pass a value matching the resolved generic parameter");
-              free(expected_type);
-              generic_bindings_free(bindings, fun->type_params.len);
-              free(bindings);
-              return ok;
-            }
-            mark_owned_move_if_needed(expr->args.items[i], scope, expected_type);
-            free(expected_type);
-          }
-          if (function_has_error_flow(ctx, program, fun)) {
-            char actual[160];
-            snprintf(actual, sizeof(actual), "call to '%s'", fun->name);
-            if (!check_fallible_call_is_checked(ctx, program, fun, expr, diag, "fallible generic function call must be checked", "check fallible_call(...)", actual, "prefix the call with check in a function marked raises")) {
-              generic_bindings_free(bindings, fun->type_params.len);
-              free(bindings);
-              return false;
-            }
-          }
-          char *return_type = type_substitute_generic_signature(program, fun->return_type, bindings, fun->type_params.len);
-          set_expr_resolved_type(expr, return_type);
-          if (!apply_checked_call_storage_effects(ctx, program, expr, scope, diag)) {
-            free(return_type);
-            generic_bindings_free(bindings, fun->type_params.len);
-            free(bindings);
-            return false;
-          }
-          free(return_type);
-          generic_bindings_free(bindings, fun->type_params.len);
-          free(bindings);
-          return true;
-        }
-      }
+      bool named_call_handled = false;
+      if (!check_named_function_call_expected(ctx, program, expr, scope, diag, expected, &named_call_handled)) return false;
+      if (named_call_handled) return true;
       for (size_t i = 0; i < expr->args.len; i++) {
-        if (expr->left && expr->left->kind == EXPR_IDENT) {
-          const Function *fun = find_function(program, expr->left->text);
-          if (fun && i < fun->params.len) {
-            char *expected_type = type_substitute_generic_signature(program, fun->params.items[i].type, NULL, 0);
-            if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected_type)) {
-              free(expected_type);
-              return false;
-            }
-            const char *actual_type = expr_type(ctx, program, expr->args.items[i], scope);
-            if (!types_compatible_in_scope(program, scope, expected_type, actual_type)) {
-              char message[256];
-              snprintf(message, sizeof(message), "argument %zu to '%s' has incompatible type", i + 1, fun->name);
-              bool ok = set_diag_detail(diag, 3005, message, expr->args.items[i]->line, expr->args.items[i]->column, expected_type, actual_type, "pass a compatible value");
-              free(expected_type);
-              return ok;
-            }
-            mark_owned_move_if_needed(expr->args.items[i], scope, expected_type);
-            free(expected_type);
-          }
-        } else {
-          if (!check_expr(ctx, program, expr->args.items[i], scope, diag)) return false;
-        }
-      }
-      if (expr->left && expr->left->kind == EXPR_IDENT) {
-        const Function *fun = find_function(program, expr->left->text);
-        if (fun && !function_is_generic(fun) && !apply_checked_call_storage_effects(ctx, program, expr, scope, diag)) return false;
+        if (!check_expr(ctx, program, expr->args.items[i], scope, diag)) return false;
       }
       if (is_world_stream_write_call(expr, scope)) {
         if (expr->args.len != 1) return set_diag_detail(diag, 3004, "World stream write expects one argument", expr->line, expr->column, "world.out.write(text)", "wrong argument count", "pass exactly one String or byte span argument");
@@ -6533,30 +6599,27 @@ static bool check_expr_expected(CheckContext *ctx, const Program *program, const
               return false;
             }
             const char *alloc_type = expr_type(ctx, program, expr->args.items[0], scope);
+            ZCallResolution read_all_resolution = {0};
+            bool read_all_resolved = resolve_stdlib_call(expr, &read_all_resolution);
+            if (read_all_resolved) z_call_resolution_add_arg(&read_all_resolution, 0, expr->args.items[0], NULL, alloc_type);
             if (!is_allocator_type(alloc_type)) {
+              z_call_resolution_free(&read_all_resolution);
               zbuf_free(&std_name);
               return set_diag_detail(diag, 3012, "std.fs.readAll expects an allocator primitive", expr->args.items[0]->line, expr->args.items[0]->column, "NullAlloc or mutable FixedBufAlloc", alloc_type, "pass an explicit allocator; no global filesystem allocator is available");
             }
             if (strcmp(alloc_type, "FixedBufAlloc") == 0 &&
                 (expr->args.items[0]->kind != EXPR_IDENT || !scope_is_mutable(scope, expr->args.items[0]->text))) {
+              z_call_resolution_free(&read_all_resolution);
               zbuf_free(&std_name);
               return set_diag_detail(diag, 3012, "std.fs.readAll requires a mutable FixedBufAlloc binding", expr->args.items[0]->line, expr->args.items[0]->column, "let mut allocator: FixedBufAlloc", "immutable or temporary FixedBufAlloc", "store the fixed buffer allocator in a let mut binding before reading");
             }
-            for (size_t i = 1; i < expr->args.len; i++) {
-              const char *expected = std_call_arg_type(std_name.data, i);
-              if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected)) {
-                zbuf_free(&std_name);
-                return false;
-              }
-              const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
-              if (expected && !types_compatible_in_scope(program, scope, expected, actual)) {
-                char message[256];
-                snprintf(message, sizeof(message), "argument %zu to '%s' has incompatible type", i + 1, std_name.data);
-                zbuf_free(&std_name);
-                return set_diag_detail(diag, 3012, message, expr->args.items[i]->line, expr->args.items[i]->column, expected, actual, "pass a compatible value");
-              }
+            if (!check_stdlib_table_arg_range_expected(ctx, program, expr, scope, diag, std_name.data, 1, false, read_all_resolved ? &read_all_resolution : NULL)) {
+              z_call_resolution_free(&read_all_resolution);
+              zbuf_free(&std_name);
+              return false;
             }
             set_expr_resolved_type(expr, strcmp(std_name.data, "std.fs.readAllOrRaise") == 0 ? "owned<ByteBuf>" : "Maybe<owned<ByteBuf>>");
+            z_call_resolution_free(&read_all_resolution);
             zbuf_free(&std_name);
             return true;
           }
@@ -6595,37 +6658,15 @@ static bool check_expr_expected(CheckContext *ctx, const Program *program, const
             zbuf_free(&std_name);
             return true;
           }
-          for (size_t i = 0; i < expr->args.len; i++) {
-            const char *expected = std_call_arg_type(std_name.data, i);
-            if (!check_expr_expected(ctx, program, expr->args.items[i], scope, diag, expected)) {
-              zbuf_free(&std_name);
-              return false;
-            }
-            const char *actual = expr_type(ctx, program, expr->args.items[i], scope);
-            if (expr->args.items[i]->kind == EXPR_IDENT) {
-              const char *scope_actual = scope_type(scope, expr->args.items[i]->text);
-              if (scope_actual) actual = scope_actual;
-            }
-            bool span_array_arg = false;
-            bool expected_span = expected && type_is_named_generic(expected, "Span");
-            bool expected_mut_span = expected && type_is_named_generic(expected, "MutSpan");
-            bool inline_array_literal = expr->args.items[i] && expr->args.items[i]->kind == EXPR_ARRAY_LITERAL;
-            if (expected && actual && actual[0] == '[' && (expected_span || (expected_mut_span && !inline_array_literal))) {
-              char expected_element[128];
-              char actual_element[128];
-              if (span_element_text(expected, expected_element, sizeof(expected_element)) &&
-                  fixed_array_type_parts(actual, NULL, 0, actual_element, sizeof(actual_element))) {
-                span_array_arg = types_compatible_in_scope(program, scope, expected_element, actual_element);
-              }
-            }
-            if (expected && !span_array_arg && !types_compatible_in_scope(program, scope, expected, actual)) {
-              char message[256];
-              snprintf(message, sizeof(message), "argument %zu to '%s' has incompatible type", i + 1, std_name.data);
-              zbuf_free(&std_name);
-              return set_diag_detail(diag, 3012, message, expr->args.items[i]->line, expr->args.items[i]->column, expected, actual, "pass a compatible value");
-            }
+          ZCallResolution std_resolution = {0};
+          bool std_resolved = resolve_stdlib_call(expr, &std_resolution);
+          if (!check_stdlib_table_arg_range_expected(ctx, program, expr, scope, diag, std_name.data, 0, true, std_resolved ? &std_resolution : NULL)) {
+            z_call_resolution_free(&std_resolution);
+            zbuf_free(&std_name);
+            return false;
           }
-          set_expr_resolved_type(expr, std_call_return_type(expr->left));
+          set_expr_resolved_type(expr, std_resolved && std_resolution.return_type ? std_resolution.return_type : std_call_return_type(expr->left));
+          z_call_resolution_free(&std_resolution);
         } else if (strncmp(std_name.data, "std.", strlen("std.")) == 0) {
           char message[256];
           snprintf(message, sizeof(message), "unknown std helper '%s'", std_name.data);
@@ -7087,8 +7128,7 @@ static bool generic_call_bindings_from_checked_call(CheckContext *ctx, const Pro
 static char *call_param_type_text(const Program *program, const Function *callee, size_t param_index, GenericBinding *bindings, size_t binding_len) {
   if (!callee || param_index >= callee->params.len) return z_strdup("Unknown");
   const char *param_type = callee->params.items[param_index].type;
-  if (bindings && binding_len > 0) return type_substitute_generic_signature(program, param_type, bindings, binding_len);
-  return z_strdup(param_type ? param_type : "Unknown");
+  return type_substitute_generic_signature(program, param_type ? param_type : "Unknown", bindings, binding_len);
 }
 
 static void call_resolution_record_bindings(ZCallResolution *resolution, GenericBinding *bindings, size_t binding_len) {
@@ -7300,13 +7340,15 @@ static bool maybe_unwrapped_value_provenance(ValueProvenance *out, const ValuePr
 }
 
 static bool choice_constructor_value_provenance(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ValueProvenance *origins) {
-  if (!program || !expr || expr->kind != EXPR_CALL || !expr->left || expr->left->kind != EXPR_MEMBER || !origins) return false;
-  const Expr *owner = expr->left->left;
-  if (!owner || owner->kind != EXPR_IDENT) return false;
-  const Choice *choice = find_choice(program, owner->text);
-  if (!choice) return false;
-  const Param *item_case = find_case(&choice->cases, expr->left->text);
-  if (!item_case || !item_case->type || expr->args.len != 1) return false;
+  if (!program || !expr || !origins) return false;
+  ZCallResolution resolution = {0};
+  if (!resolve_choice_constructor_call(program, expr, &resolution)) return false;
+  const Param *item_case = resolution.choice_case;
+  if (!item_case || !item_case->type || expr->args.len != 1) {
+    z_call_resolution_free(&resolution);
+    return false;
+  }
+  z_call_resolution_add_arg(&resolution, 0, expr->args.items[0], item_case->type, expr_type(ctx, program, expr->args.items[0], scope));
 
   ValueProvenance payload_origins = {0};
   bool added = false;
@@ -7314,6 +7356,7 @@ static bool choice_constructor_value_provenance(CheckContext *ctx, const Program
     added = value_provenance_add_all_with_prefix(origins, &payload_origins, item_case->name);
   }
   value_provenance_free(&payload_origins);
+  z_call_resolution_free(&resolution);
   return added;
 }
 
