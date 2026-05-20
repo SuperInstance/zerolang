@@ -398,6 +398,7 @@ for (const fixture of [
   "conformance/check/pass/generic-static-forwarding.0",
   "conformance/check/pass/generic-static-method-forwarding.0",
   "conformance/check/pass/generic-static-return-substitution.0",
+  "conformance/check/pass/generic-static-wrapper-type-collision.0",
   "conformance/check/pass/generic-untyped-static-const-inference.0",
   "conformance/check/pass/generic-const-shadowing.0",
   "conformance/check/pass/generic-const-type-name-collision.0",

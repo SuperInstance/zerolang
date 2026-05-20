@@ -5167,7 +5167,19 @@ static const ParamVec *generic_type_params_for_name(const Program *program, cons
   return NULL;
 }
 
+static bool builtin_type_arg_kind(const char *type_name, size_t arg_index, ZTypeArgKind *out_kind) {
+  if (!type_name || !out_kind || arg_index != 0) return false;
+  const char *type_arg_wrappers[] = {"Maybe", "Span", "MutSpan", "ref", "mutref", "owned", NULL};
+  for (size_t i = 0; type_arg_wrappers[i]; i++) {
+    if (strcmp(type_name, type_arg_wrappers[i]) != 0) continue;
+    *out_kind = Z_TYPE_ARG_TYPE;
+    return true;
+  }
+  return false;
+}
+
 static bool type_core_generic_arg_kind_for_program(const void *context, const char *type_name, size_t arg_index, ZTypeArgKind *out_kind) {
+  if (builtin_type_arg_kind(type_name, arg_index, out_kind)) return true;
   const Program *program = (const Program *)context;
   const ParamVec *type_params = generic_type_params_for_name(program, type_name);
   if (!type_params || arg_index >= type_params->len || !out_kind) return false;
