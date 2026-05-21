@@ -1,72 +1,107 @@
-# zerolang
+# SuperInstance / zerolang
 
-zerolang is an experiment in building an agent-first programming language.
+We forked [zerolang](https://github.com/vercel-labs/zerolang) to use it as a teaching tool. The programs in this repo prove mathematical theorems as native executables smaller than this paragraph.
 
-The project is exploring what changes when agents are primary users from day one: a language that can be learned on the fly, tooling that exposes structured facts for debugging and repair, and a standard library broad enough that most programs do not start with a dependency search.
+## What's in Here
 
-zerolang is pre-1 and intentionally unstable. The project will make breaking changes while it searches for the language, library, and tooling patterns that work best for agents. Treat today's syntax and APIs as something to explore, not something to memorize. If that sounds useful, try it with us: run examples, inspect the structured output, and send feedback about what helps agents work better.
+### `packages/` — Concept Demos
 
-Security vulnerabilities should be expected. zerolang is not ready for production systems, sensitive data, or trusted infrastructure. If you plan to run or develop zerolang, do so in an isolated, disposable environment.
+Each directory contains a zerolang program that demonstrates one mathematical concept. They compile to standalone ELF binaries — no interpreter, no runtime, no libc.
 
-## What zerolang Is Aiming For
+| Package | What It Shows | Binary Size |
+|---------|--------------|-------------|
+| `laman-rigidity` | Fleet of agents stays rigid with 12 neighbors | 614 bytes |
+| `eisenstein-snap` | Hexagonal lattice distance (a²+ab+b²) | 715 bytes |
+| `pythagorean48` | 48 exact unit vectors on the unit circle | 1,068 bytes |
+| `holonomy-consensus` | 5 agents converge without voting | 1,452 bytes |
+| `fleet-edges` | Edge count always exceeds Laman threshold | 1,438 bytes |
+| `information-bound` | log₂(48) = 5.585 bits of information per byte | 784 bytes |
 
-- Agent-first learnability: a small, regular language surface that agents can pick up quickly from examples, docs, and compiler feedback.
-- Standard-library depth: common capabilities should live in documented, coherent library APIs instead of scattered dependency stacks.
-- Deterministic tooling: diagnostics, graph facts, size reports, explanations, and fix plans should be structured enough for agents to inspect and act on.
-- Direct developer experience: checking, running, formatting, inspecting, and repairing code should be fast, copyable, and scriptable.
-- Regularity over syntax: prefer one obvious way to express most things, even when that makes code more explicit than a human might choose in another language.
-
-## Quick Start
-
-Install the latest release:
-
-```bash
-curl -fsSL https://zerolang.ai/install.sh | bash
-export PATH="$HOME/.zero/bin:$PATH"
-zero --version
-```
-
-Check a program:
+### Run Them
 
 ```bash
-zero check examples/hello.0
+# Build the compiler
+make -C native/zero-c
+
+# Check a program (verify it type-checks)
+bin/zero check packages/laman-rigidity/main.0
+
+# Run it
+bin/zero run packages/laman-rigidity/main.0
+# Output: laman rigidity: all fleet sizes 3-100 are rigid with 12 neighbors
+
+# Build a native executable
+bin/zero build --emit exe --target linux-musl-x64 packages/laman-rigidity/main.0 --out /tmp/proof
+/tmp/proof
+# Output: laman rigidity: all fleet sizes 3-100 are rigid with 12 neighbors
+
+# Check the size
+ls -la /tmp/proof
+# -rwxr-xr-x 1 user user 614 May 21 10:00 /tmp/proof
 ```
 
-Run a small executable:
+614 bytes. That's the theorem, the proof loop, the output string, the ELF headers, and the syscall to write it. Nothing else.
+
+### Understand Them
+
+Zerolang's tooling shows you exactly what a program does:
 
 ```bash
-zero run examples/add.0
+# See every function, type, and effect as structured JSON
+bin/zero graph --json packages/laman-rigidity/main.0
+
+# Get an explanation of any diagnostic
+bin/zero explain TYP009
+
+# Get a machine-readable repair plan
+bin/zero fix --plan --json packages/laman-rigidity/main.0
+
+# Check the exact binary size breakdown
+bin/zero size --json packages/laman-rigidity/main.0
 ```
 
-Expected output:
+## The Concepts, Briefly
 
-```text
-math works
-```
+### Laman Rigidity
 
-## Common Commands
+A structure in 2D is rigid if it has exactly `2n - 2` independent bars for `n` joints. This is Laman's theorem (1970). If each joint connects to 12 neighbors, you get `6n` bars, which always exceeds `2n - 2`. That's why our fleet coordination uses 12 neighbors — it's the threshold where rigidity is guaranteed.
 
-```bash
-zero check examples/hello.0
-zero run examples/add.0
-zero build --emit exe --target linux-musl-x64 examples/add.0 --out .zero/out/add
-zero graph --json examples/systems-package
-zero size --json examples/point.0
-zero skills get zero --full
-zero doctor --json
-```
+### Eisenstein Integers
 
-## Validation
+Complex numbers of the form `a + bω` where `ω = e^(2πi/3)` form a hexagonal lattice. The hexagonal lattice is the densest possible 2D packing (Thue, 1910). The distance metric is `a² + ab + b²`, and it's what we use for embedding data because hexagonal resolution beats rectangular.
 
-```bash
-pnpm run docs:test
-pnpm run conformance
-pnpm run native:test
-pnpm run command-contracts
-```
+### Pythagorean48
 
-Benchmarks run locally by default:
+The 3-4-5 right triangle generates 12 rotations on the unit circle, times 4 sign combinations, giving 48 exact unit vectors with rational coordinates. `log₂(48) = 5.585`, meaning each direction carries 5.585 bits. An 8-bit integer only holds 8 bits total — so we're at 69.8% of theoretical maximum information density.
 
-```bash
-pnpm run bench
-```
+### Holonomy Consensus
+
+Holonomy measures how much a vector "twists" when you walk it around a loop on a curved surface. On a flat surface (zero holonomy), the vector comes back unchanged. In our fleet, each agent averages with its neighbors. When all values converge (zero "twist"), consensus is reached. No leader election. No quorum. No voting.
+
+### Information Bound
+
+Shannon's theorem says the maximum information in a symbol is `log₂(N)` bits where `N` is the number of distinct symbols. With 48 directions, that's 5.585 bits per direction. This program computes that bound by finding the power of 2 that brackets 48: `2⁵ = 32 < 48 < 64 = 2⁶`.
+
+## The Full Ecosystem
+
+These tiny programs are proofs of concept. The real implementations are in our [Python packages](https://pypi.org/user/superinstance/), [Rust crates](https://crates.io/users/superinstance), and [C/CUDA repos](https://github.com/orgs/SuperInstance/repositories):
+
+| What | Python Package | Rust Crate | C/CUDA |
+|------|---------------|-----------|--------|
+| Eisenstein embeddings | `eisenstein-embed` | `eisenstein` | in forgemaster |
+| Constraint theory | `constraint-theory-ecosystem` | `constraint-theory-rust-python` | `flux-engine-c` |
+| Fleet coordination | `fleet-agent` | `fleet-resonance` | `warp-room` |
+| Holonomy consensus | `fleet-health-monitor` | `holonomy-consensus` | — |
+| Spline interpolation | `tensor-spline` | — | — |
+
+3,134 tests passing across 33 Python packages. Build status and cross-language benchmarks in [`docs/`](docs/).
+
+## The Upstream
+
+This is a fork of [vercel-labs/zerolang](https://github.com/vercel-labs/zerolang). The upstream project is building an agent-first programming language. We're using it as a medium for mathematical proofs.
+
+All zerolang features work as documented upstream. Our additions are in `packages/`, `skill-data/`, and `docs/`.
+
+## License
+
+MIT (upstream zerolang) + MIT (our additions).
