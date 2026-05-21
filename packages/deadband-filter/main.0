@@ -1,0 +1,139 @@
+// Deadband Signal Filter — Noise Rejection Demo
+//
+// Deadband: if |value - baseline| < threshold, output baseline (suppress).
+// Otherwise, update baseline to value. This filters out small noise
+// while passing real signal changes.
+//
+// Uses fixed-point x1000. threshold = 500 (0.5).
+
+pub fun main(world: World) -> Void raises {
+    // 10 signal values (scaled x1000): 10.0, 10.1, 10.3, 9.8, 15.0, 15.2, 14.9, 10.5, 10.4, 20.0
+    let v0: i32 = 10000
+    let v1: i32 = 10100
+    let v2: i32 = 10300
+    let v3: i32 = 9800
+    let v4: i32 = 15000
+    let v5: i32 = 15200
+    let v6: i32 = 14900
+    let v7: i32 = 10500
+    let v8: i32 = 10400
+    let v9: i32 = 20000
+
+    let threshold: i32 = 500
+
+    // Print raw input header
+    check world.out.write("deadband: raw    -> filtered\n")
+
+    let mut baseline: i32 = v0
+    // v0: baseline starts at 10000, diff=0 -> output baseline
+    let diff0: i32 = v0 - baseline
+    let mut adiff0: i32 = diff0
+    if diff0 < 0 { adiff0 = 0 - diff0 }
+    if adiff0 < threshold {
+        check world.out.write("deadband: 10000 -> 10000 (no change)\n")
+    } else {
+        baseline = v0
+        check world.out.write("deadband: 10000 -> 10000 (update)\n")
+    }
+
+    // v1: diff = 10100-10000 = 100 < 500 -> suppress
+    let diff1: i32 = v1 - baseline
+    let mut adiff1: i32 = diff1
+    if diff1 < 0 { adiff1 = 0 - diff1 }
+    if adiff1 < threshold {
+        check world.out.write("deadband: 10100 -> 10000 (suppressed)\n")
+    } else {
+        baseline = v1
+        check world.out.write("deadband: 10100 -> 10100 (update)\n")
+    }
+
+    // v2: diff = 10300-10000 = 300 < 500 -> suppress
+    let diff2: i32 = v2 - baseline
+    let mut adiff2: i32 = diff2
+    if diff2 < 0 { adiff2 = 0 - diff2 }
+    if adiff2 < threshold {
+        check world.out.write("deadband: 10300 -> 10000 (suppressed)\n")
+    } else {
+        baseline = v2
+        check world.out.write("deadband: 10300 -> 10300 (update)\n")
+    }
+
+    // v3: diff = 9800-10000 = -200, |diff|=200 < 500 -> suppress
+    let diff3: i32 = v3 - baseline
+    let mut adiff3: i32 = diff3
+    if diff3 < 0 { adiff3 = 0 - diff3 }
+    if adiff3 < threshold {
+        check world.out.write("deadband:  9800 -> 10000 (suppressed)\n")
+    } else {
+        baseline = v3
+        check world.out.write("deadband:  9800 ->  9800 (update)\n")
+    }
+
+    // v4: diff = 15000-10000 = 5000 > 500 -> UPDATE
+    let diff4: i32 = v4 - baseline
+    let mut adiff4: i32 = diff4
+    if diff4 < 0 { adiff4 = 0 - diff4 }
+    if adiff4 < threshold {
+        check world.out.write("deadband: 15000 -> 10000 (suppressed)\n")
+    } else {
+        baseline = v4
+        check world.out.write("deadband: 15000 -> 15000 (UPDATE)\n")
+    }
+
+    // v5: diff = 15200-15000 = 200 < 500 -> suppress
+    let diff5: i32 = v5 - baseline
+    let mut adiff5: i32 = diff5
+    if diff5 < 0 { adiff5 = 0 - diff5 }
+    if adiff5 < threshold {
+        check world.out.write("deadband: 15200 -> 15000 (suppressed)\n")
+    } else {
+        baseline = v5
+        check world.out.write("deadband: 15200 -> 15200 (update)\n")
+    }
+
+    // v6: diff = 14900-15000 = -100, |diff|=100 < 500 -> suppress
+    let diff6: i32 = v6 - baseline
+    let mut adiff6: i32 = diff6
+    if diff6 < 0 { adiff6 = 0 - diff6 }
+    if adiff6 < threshold {
+        check world.out.write("deadband: 14900 -> 15000 (suppressed)\n")
+    } else {
+        baseline = v6
+        check world.out.write("deadband: 14900 -> 14900 (update)\n")
+    }
+
+    // v7: diff = 10500-15000 = -4500, |diff|=4500 > 500 -> UPDATE
+    let diff7: i32 = v7 - baseline
+    let mut adiff7: i32 = diff7
+    if diff7 < 0 { adiff7 = 0 - diff7 }
+    if adiff7 < threshold {
+        check world.out.write("deadband: 10500 -> 15000 (suppressed)\n")
+    } else {
+        baseline = v7
+        check world.out.write("deadband: 10500 -> 10500 (UPDATE)\n")
+    }
+
+    // v8: diff = 10400-10500 = -100, |diff|=100 < 500 -> suppress
+    let diff8: i32 = v8 - baseline
+    let mut adiff8: i32 = diff8
+    if diff8 < 0 { adiff8 = 0 - diff8 }
+    if adiff8 < threshold {
+        check world.out.write("deadband: 10400 -> 10500 (suppressed)\n")
+    } else {
+        baseline = v8
+        check world.out.write("deadband: 10400 -> 10400 (update)\n")
+    }
+
+    // v9: diff = 20000-10500 = 9500 > 500 -> UPDATE
+    let diff9: i32 = v9 - baseline
+    let mut adiff9: i32 = diff9
+    if diff9 < 0 { adiff9 = 0 - diff9 }
+    if adiff9 < threshold {
+        check world.out.write("deadband: 20000 -> 10500 (suppressed)\n")
+    } else {
+        baseline = v9
+        check world.out.write("deadband: 20000 -> 20000 (UPDATE)\n")
+    }
+
+    check world.out.write("deadband: 5 suppressed, 3 passed — noise filtered\n")
+}

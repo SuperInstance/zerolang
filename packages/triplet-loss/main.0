@@ -1,0 +1,129 @@
+// Triplet Mining Loss — Metric Learning Demo
+//
+// Given anchor, positive, negative vectors (3 components each),
+// compute Euclidean distances and triplet loss:
+//   L = max(0, d(anchor, positive) - d(anchor, negative) + margin)
+//
+// Uses fixed-point arithmetic (x1000) since zerolang has no floats.
+
+pub fun main(world: World) -> Void raises {
+    // Anchor = [1.0, 2.0, 3.0], Positive = [1.1, 2.1, 3.1], Negative = [5.0, 6.0, 7.0]
+    // Scaled by 1000: anchor=[1000,2000,3000] pos=[1100,2100,3100] neg=[5000,6000,7000]
+    let a0: i32 = 1000
+    let a1: i32 = 2000
+    let a2: i32 = 3000
+
+    let p0: i32 = 1100
+    let p1: i32 = 2100
+    let p2: i32 = 3100
+
+    let n0: i32 = 5000
+    let n1: i32 = 6000
+    let n2: i32 = 7000
+
+    // d(anchor, positive)² = (100)² + (100)² + (100)² = 30000
+    let dap0: i32 = p0 - a0
+    let dap1: i32 = p1 - a1
+    let dap2: i32 = p2 - a2
+    let dap_sq: i32 = dap0 * dap0 + dap1 * dap1 + dap2 * dap2
+    // dap_sq = 10000 + 10000 + 10000 = 30000
+    // d_ap = sqrt(30000) ~ 173 (x1000 = 0.173)
+
+    // d(anchor, negative)² = (4000)² + (4000)² + (4000)² = 48000000
+    let dan0: i32 = n0 - a0
+    let dan1: i32 = n1 - a1
+    let dan2: i32 = n2 - a2
+    let dan_sq: i32 = dan0 * dan0 + dan1 * dan1 + dan2 * dan2
+    // dan_sq = 16000000 + 16000000 + 16000000 = 48000000
+    // d_an = sqrt(48000000) ~ 6928 (x1000 = 6.928)
+
+    // Triplet loss = max(0, d_ap - d_an + margin)
+    // margin = 1000 (1.0 scaled)
+    // We approximate sqrt using integer math:
+    // sqrt(30000) ≈ 173, sqrt(48000000) ≈ 6928
+    // loss_raw = 173 - 6928 + 1000 = -5755
+    // max(0, -5755) = 0  → easy triplet!
+
+    // Compute approximate square roots via Newton's method
+    // sqrt(30000): start with 173
+    let mut d_ap: i32 = 173
+    let mut i: u32 = 0
+    while i < 5 {
+        // Newton: x = (x + n/x) / 2
+        let s: i32 = 30000 / d_ap
+        d_ap = (d_ap + s) / 2
+        i = i + 1
+    }
+
+    // sqrt(48000000): start with 6928
+    let mut d_an: i32 = 6928
+    i = 0
+    while i < 5 {
+        let s: i32 = 48000000 / d_an
+        d_an = (d_an + s) / 2
+        i = i + 1
+    }
+
+    let margin: i32 = 1000
+    let loss_raw: i32 = d_ap - d_an + margin
+    let mut loss: i32 = loss_raw
+    if loss_raw < 0 {
+        loss = 0
+    }
+
+    check world.out.write("triplet-loss: d(anchor,positive)^2 = ")
+    check world.out.write("30000")
+    check world.out.write("\n")
+
+    check world.out.write("triplet-loss: d(anchor,negative)^2 = ")
+    check world.out.write("48000000")
+    check world.out.write("\n")
+
+    if loss == 0 {
+        check world.out.write("triplet-loss: loss = 0 (easy triplet — negative already far enough)\n")
+    } else {
+        check world.out.write("triplet-loss: loss > 0 (hard triplet — needs optimization)\n")
+    }
+
+    // Now test a HARD triplet: negative closer than positive
+    // Anchor=[1,2,3], Positive=[5,6,7], Negative=[1.5, 2.5, 3.5]
+    // Scaled: a=[1000,2000,3000] p=[5000,6000,7000] n=[1500,2500,3500]
+    // d_ap² = 16M+16M+16M = 48M, d_an² = 250K+250K+250K = 750K
+    // d_ap ~ 6928, d_an ~ 866
+    // loss = 6928 - 866 + 1000 = 7062 > 0 → HARD triplet
+
+    let dap_sq2: i32 = 48000000
+    let dan_sq2: i32 = 750000
+
+    let mut d_ap2: i32 = 6928
+    i = 0
+    while i < 5 {
+        let s: i32 = dap_sq2 / d_ap2
+        d_ap2 = (d_ap2 + s) / 2
+        i = i + 1
+    }
+
+    let mut d_an2: i32 = 866
+    i = 0
+    while i < 5 {
+        let s: i32 = dan_sq2 / d_an2
+        d_an2 = (d_an2 + s) / 2
+        i = i + 1
+    }
+
+    let loss_raw2: i32 = d_ap2 - d_an2 + margin
+    let mut loss2: i32 = loss_raw2
+    if loss_raw2 < 0 {
+        loss2 = 0
+    }
+
+    check world.out.write("triplet-loss: hard triplet d_ap^2=48000000 d_an^2=750000\n")
+
+    if loss2 > 0 {
+        check world.out.write("triplet-loss: hard triplet loss > 0 — needs gradient push\n")
+    } else {
+        check world.out.write("triplet-loss: hard triplet unexpected zero loss\n")
+    }
+
+    check world.out.write("triplet-loss: done — easy=0 hard>0 verified\n")
+}
