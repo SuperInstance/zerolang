@@ -1,0 +1,72 @@
+// Holonomy Consensus — Zero Holonomy Means Consensus Without Voting
+//
+// Holonomy: after traversing a closed loop, a quantity returns to
+// its starting value. Zero holonomy = no drift = consensus reached.
+//
+// Simulate 5 agents, each adopting the average of its neighbors
+// in a ring topology. After enough iterations, all converge.
+// Holonomy is measured as max deviation from the mean.
+
+pub fun main(world: World) -> Void raises {
+    // 5 agents with initial values
+    let mut v0: i32 = 10
+    let mut v1: i32 = 30
+    let mut v2: i32 = 50
+    let mut v3: i32 = 70
+    let mut v4: i32 = 90
+
+    let mut iter: u32 = 0
+    let mut converged: Bool = false
+
+    while iter < 200 {
+        // Compute new values (ring topology: each agent averages with neighbors)
+        let n0: i32 = (v4 + v0 + v1) / 3
+        let n1: i32 = (v0 + v1 + v2) / 3
+        let n2: i32 = (v1 + v2 + v3) / 3
+        let n3: i32 = (v2 + v3 + v4) / 3
+        let n4: i32 = (v3 + v4 + v0) / 3
+
+        v0 = n0
+        v1 = n1
+        v2 = n2
+        v3 = n3
+        v4 = n4
+
+        // Check convergence: all within 1 of each other
+        let mean: i32 = (v0 + v1 + v2 + v3 + v4) / 5
+        let d0: i32 = v0 - mean
+        let d1: i32 = v1 - mean
+        let d2: i32 = v2 - mean
+        let d3: i32 = v3 - mean
+        let d4: i32 = v4 - mean
+
+        // Absolute value via comparison
+        let mut max_dev: i32 = 0
+        if d0 > max_dev { max_dev = d0 }
+        if d0 < 0 - max_dev { max_dev = 0 - d0 }
+        if d1 > max_dev { max_dev = d1 }
+        if d1 < 0 - max_dev { max_dev = 0 - d1 }
+        if d2 > max_dev { max_dev = d2 }
+        if d2 < 0 - max_dev { max_dev = 0 - d2 }
+        if d3 > max_dev { max_dev = d3 }
+        if d3 < 0 - max_dev { max_dev = 0 - d3 }
+        if d4 > max_dev { max_dev = d4 }
+        if d4 < 0 - max_dev { max_dev = 0 - d4 }
+
+        if max_dev <= 1 {
+            converged = true
+        }
+
+        if converged {
+            iter = iter + 1
+            iter = 200  // break
+        }
+        iter = iter + 1
+    }
+
+    if converged {
+        check world.out.write("holonomy: consensus reached — holonomy is zero\n")
+    } else {
+        check world.out.write("holonomy: consensus pending — holonomy nonzero\n")
+    }
+}
