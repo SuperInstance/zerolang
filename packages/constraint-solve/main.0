@@ -1,0 +1,53 @@
+// Constraint Satisfaction — Bar-Joint Framework
+//
+// Three bars connect at two joints. Given bar lengths,
+// verify the constraints are satisfiable using the
+// triangle inequality: a + b > c for all permutations.
+//
+// This is the simplest possible constraint system.
+// A bar-joint framework with 3 bars and 3 joints forming
+// a triangle. The system is rigid (Laman: 2*3-2 = 4 > 3,
+// so we need one more constraint, which we add as a fixed angle).
+
+fun check_triangle(a: i32, b: i32, c: i32) -> Bool {
+    // Triangle inequality: sum of any two sides exceeds the third
+    let ab: i32 = a + b
+    let bc: i32 = b + c
+    let ac: i32 = a + c
+    if ab > c {
+        if bc > a {
+            if ac > b {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+pub fun main(world: World) -> Void raises {
+    // A 3-4-5 triangle: the simplest rigid constraint system
+    let a: i32 = 3
+    let b: i32 = 4
+    let c: i32 = 5
+
+    if check_triangle(a, b, c) {
+        check world.out.write("constraint: 3-4-5 triangle is satisfiable\n")
+    } else {
+        check world.out.write("constraint: 3-4-5 triangle FAILS\n")
+    }
+
+    // A degenerate case: 1-2-3 can't form a triangle
+    // (1 + 2 = 3, not > 3)
+    if check_triangle(1, 2, 3) {
+        check world.out.write("constraint: 1-2-3 triangle is satisfiable\n")
+    } else {
+        check world.out.write("constraint: 1-2-3 triangle is degenerate (as expected)\n")
+    }
+
+    // A nearly-degenerate case: 2-3-4 barely works
+    if check_triangle(2, 3, 4) {
+        check world.out.write("constraint: 2-3-4 triangle is satisfiable\n")
+    } else {
+        check world.out.write("constraint: 2-3-4 triangle FAILS\n")
+    }
+}
