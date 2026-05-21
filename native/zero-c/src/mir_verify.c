@@ -45,6 +45,20 @@ static bool mir_type_is_integer_value(IrTypeKind type) {
          type == IR_TYPE_U64;
 }
 
+static unsigned mir_type_byte_size(IrTypeKind type) {
+  switch (type) {
+    case IR_TYPE_BOOL:
+    case IR_TYPE_U8: return 1;
+    case IR_TYPE_U16: return 2;
+    case IR_TYPE_I32:
+    case IR_TYPE_USIZE:
+    case IR_TYPE_U32: return 4;
+    case IR_TYPE_I64:
+    case IR_TYPE_U64: return 8;
+    default: return 0;
+  }
+}
+
 static void mir_verify_mark_unsupported(IrProgram *ir, const char *message, int line, int column, const char *actual) {
   if (!ir || !ir->mir_valid) return;
   ir->mir_valid = false;
@@ -237,6 +251,16 @@ static bool mir_verify_local_value_kind(IrProgram *ir, const IrFunction *fun, un
   return false;
 }
 
+static bool mir_verify_record_field_span(IrProgram *ir, const IrLocal *local, unsigned field_offset, IrTypeKind type, int line, int column, const char *message) {
+  if (!ir || !ir->mir_valid || !local) return false;
+  unsigned byte_size = mir_type_byte_size(type);
+  if (byte_size > 0 && field_offset <= local->byte_size && byte_size <= local->byte_size - field_offset) return true;
+  char actual[192];
+  snprintf(actual, sizeof(actual), "field offset %u width %u in local size %u", field_offset, byte_size, local->byte_size);
+  mir_verify_mark_unsupported(ir, message, line, column, actual);
+  return false;
+}
+
 static bool mir_verify_direct_helper_value_contract(IrProgram *ir, const IrFunction *fun, const IrValue *value, MirHelperRequirements *requirements) {
   if (!ir || !ir->mir_valid || !value) return ir && ir->mir_valid;
   switch (value->kind) {
@@ -319,6 +343,17 @@ static bool mir_verify_direct_value(IrProgram *ir, const IrFunction *fun, const 
       mir_verify_mark_unsupported(ir, "MIR verifier found local value type mismatch", value->line, value->column, actual);
       return false;
     }
+  }
+  if (value->kind == IR_VALUE_FIELD_LOAD) {
+    if (!mir_verify_local_index(ir, fun, value->local_index, value->line, value->column, "MIR verifier found field load outside the local table")) return false;
+    const IrLocal *local = &fun->locals[value->local_index];
+    if (!local->is_record) {
+      char actual[160];
+      snprintf(actual, sizeof(actual), "local %s is %s", local->name ? local->name : "<unnamed>", mir_type_kind_name(local->type));
+      mir_verify_mark_unsupported(ir, "MIR verifier found field load from a non-record local", value->line, value->column, actual);
+      return false;
+    }
+    if (!mir_verify_record_field_span(ir, local, value->field_offset, value->type, value->line, value->column, "MIR verifier found field load outside the local storage")) return false;
   }
   for (size_t i = 0; i < value->arg_len; i++) {
     if (!mir_verify_direct_value(ir, fun, value->args[i], requirements)) return false;
@@ -410,16 +445,11 @@ static bool mir_verify_direct_instr_contract(IrProgram *ir, const IrFunction *fu
         mir_verify_mark_unsupported(ir, "MIR verifier found field write to a non-record local", instr->line, instr->column, actual);
         return false;
       }
-      if (instr->field_offset >= local->byte_size) {
-        char actual[160];
-        snprintf(actual, sizeof(actual), "field offset %u in local size %u", instr->field_offset, local->byte_size);
-        mir_verify_mark_unsupported(ir, "MIR verifier found field write outside the local storage", instr->line, instr->column, actual);
-        return false;
-      }
       if (!instr->value) {
         mir_verify_mark_unsupported(ir, "MIR verifier found field write without a value", instr->line, instr->column, "missing field value");
         return false;
       }
+      if (!mir_verify_record_field_span(ir, local, instr->field_offset, instr->value->type, instr->line, instr->column, "MIR verifier found field write outside the local storage")) return false;
       break;
     }
     case IR_INSTR_WORLD_WRITE:

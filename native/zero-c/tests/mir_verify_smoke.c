@@ -218,6 +218,26 @@ static void field_write_contract_fails(void) {
   expect_fail("field write out of range", &ir, "field write outside the local storage");
 }
 
+static void field_write_partial_overrun_fails(void) {
+  IrLocal locals[] = {record_local("point", 0)};
+  IrValue item = value(IR_VALUE_INT, IR_TYPE_I64);
+  IrInstr store = {.kind = IR_INSTR_FIELD_STORE, .local_index = 0, .field_offset = 12, .value = &item, .line = 1, .column = 1};
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 1, 0, &store, 1, 16, false);
+  IrProgram ir = program(&fun, 1);
+  expect_fail("field write partial overrun", &ir, "field write outside the local storage");
+}
+
+static void field_load_partial_overrun_fails(void) {
+  IrLocal locals[] = {record_local("point", 0)};
+  IrValue load = value(IR_VALUE_FIELD_LOAD, IR_TYPE_I64);
+  load.local_index = 0;
+  load.field_offset = 12;
+  IrInstr ret = {.kind = IR_INSTR_RETURN, .value = &load, .line = 1, .column = 1};
+  IrFunction fun = function("main", IR_TYPE_I64, IR_TYPE_I64, locals, 1, 0, &ret, 1, 16, false);
+  IrProgram ir = program(&fun, 1);
+  expect_fail("field load partial overrun", &ir, "field load outside the local storage");
+}
+
 static void overlapping_frame_fails(void) {
   IrLocal locals[] = {
     scalar_local("a", IR_TYPE_I32, 0, false),
@@ -333,6 +353,8 @@ int main(void) {
   array_write_contract_fails();
   array_write_type_mismatch_fails();
   field_write_contract_fails();
+  field_write_partial_overrun_fails();
+  field_load_partial_overrun_fails();
   overlapping_frame_fails();
   raise_in_non_fallible_function_fails();
   raise_in_hosted_world_main_passes();
