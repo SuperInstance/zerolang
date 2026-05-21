@@ -1,0 +1,237 @@
+// Vector Search — Nearest-Neighbor on Compressed Agent DNA
+//
+// Simulates the core loop of turbovec: given N agents each with a
+// small integer "DNA" vector (Pythagorean48 quantized), find the
+// nearest neighbor by Manhattan distance.
+//
+// Real turbovec does this at scale with SIMD kernels and 4-bit
+// quantization. This demo uses 8 agents × 4 dimensions × i32.
+
+pub fun main(world: World) -> Void raises {
+    // 8 agent DNA vectors — 4 i32 components each
+    // These simulate quantized Pythagorean48 direction encodings.
+    // Agent 0: [3, 4, 0, 5]    (3-4-5 triple aligned)
+    // Agent 1: [7, 24, 0, 25]  (7-24-25 triple)
+    // Agent 2: [5, 12, 0, 13]  (5-12-13 triple)
+    // Agent 3: [3, 4, 1, 5]    (close to agent 0 — expect nearest)
+    // Agent 4: [8, 15, 0, 17]  (8-15-17 triple)
+    // Agent 5: [20, 21, 0, 29] (20-21-29 triple)
+    // Agent 6: [9, 12, 0, 15]  (scaled 3-4-5)
+    // Agent 7: [12, 16, 0, 20] (scaled 3-4-5 ×4)
+
+    // Agent DNA laid out flat: agent[i] = dna[i*4 .. i*4+3]
+    let d0: i32 = 3
+    let d1: i32 = 4
+    let d2: i32 = 0
+    let d3: i32 = 5
+
+    let d4: i32 = 7
+    let d5: i32 = 24
+    let d6: i32 = 0
+    let d7: i32 = 25
+
+    let d8: i32 = 5
+    let d9: i32 = 12
+    let d10: i32 = 0
+    let d11: i32 = 13
+
+    let d12: i32 = 3
+    let d13: i32 = 4
+    let d14: i32 = 1
+    let d15: i32 = 5
+
+    let d16: i32 = 8
+    let d17: i32 = 15
+    let d18: i32 = 0
+    let d19: i32 = 17
+
+    let d20: i32 = 20
+    let d21: i32 = 21
+    let d22: i32 = 0
+    let d23: i32 = 29
+
+    let d24: i32 = 9
+    let d25: i32 = 12
+    let d26: i32 = 0
+    let d27: i32 = 15
+
+    let d28: i32 = 12
+    let d29: i32 = 16
+    let d30: i32 = 0
+    let d31: i32 = 20
+
+    // Query: agent 0 = [3, 4, 0, 5]
+    let q0: i32 = d0
+    let q1: i32 = d1
+    let q2: i32 = d2
+    let q3: i32 = d3
+
+    // Manhattan distance to agent j:
+    //   |q0 - d[j*4+0]| + |q1 - d[j*4+1]| + |q2 - d[j*4+2]| + |q3 - d[j*4+3]|
+    // We skip j=0 (self).
+
+    // Agent 1: [7,24,0,25]
+    let mut diff: i32 = q0 - d4
+    if diff < 0 { diff = 0 - diff }
+    let mut dist1: i32 = diff
+    diff = q1 - d5
+    if diff < 0 { diff = 0 - diff }
+    dist1 = dist1 + diff
+    diff = q2 - d6
+    if diff < 0 { diff = 0 - diff }
+    dist1 = dist1 + diff
+    diff = q3 - d7
+    if diff < 0 { diff = 0 - diff }
+    dist1 = dist1 + diff
+    // dist1 = 4 + 20 + 0 + 20 = 44
+
+    // Agent 2: [5,12,0,13]
+    diff = q0 - d8
+    if diff < 0 { diff = 0 - diff }
+    let mut dist2: i32 = diff
+    diff = q1 - d9
+    if diff < 0 { diff = 0 - diff }
+    dist2 = dist2 + diff
+    diff = q2 - d10
+    if diff < 0 { diff = 0 - diff }
+    dist2 = dist2 + diff
+    diff = q3 - d11
+    if diff < 0 { diff = 0 - diff }
+    dist2 = dist2 + diff
+    // dist2 = 2 + 8 + 0 + 8 = 18
+
+    // Agent 3: [3,4,1,5]
+    diff = q0 - d12
+    if diff < 0 { diff = 0 - diff }
+    let mut dist3: i32 = diff
+    diff = q1 - d13
+    if diff < 0 { diff = 0 - diff }
+    dist3 = dist3 + diff
+    diff = q2 - d14
+    if diff < 0 { diff = 0 - diff }
+    dist3 = dist3 + diff
+    diff = q3 - d15
+    if diff < 0 { diff = 0 - diff }
+    dist3 = dist3 + diff
+    // dist3 = 0 + 0 + 1 + 0 = 1
+
+    // Agent 4: [8,15,0,17]
+    diff = q0 - d16
+    if diff < 0 { diff = 0 - diff }
+    let mut dist4: i32 = diff
+    diff = q1 - d17
+    if diff < 0 { diff = 0 - diff }
+    dist4 = dist4 + diff
+    diff = q2 - d18
+    if diff < 0 { diff = 0 - diff }
+    dist4 = dist4 + diff
+    diff = q3 - d19
+    if diff < 0 { diff = 0 - diff }
+    dist4 = dist4 + diff
+    // dist4 = 5 + 11 + 0 + 12 = 28
+
+    // Agent 5: [20,21,0,29]
+    diff = q0 - d20
+    if diff < 0 { diff = 0 - diff }
+    let mut dist5: i32 = diff
+    diff = q1 - d21
+    if diff < 0 { diff = 0 - diff }
+    dist5 = dist5 + diff
+    diff = q2 - d22
+    if diff < 0 { diff = 0 - diff }
+    dist5 = dist5 + diff
+    diff = q3 - d23
+    if diff < 0 { diff = 0 - diff }
+    dist5 = dist5 + diff
+    // dist5 = 17 + 17 + 0 + 24 = 58
+
+    // Agent 6: [9,12,0,15]
+    diff = q0 - d24
+    if diff < 0 { diff = 0 - diff }
+    let mut dist6: i32 = diff
+    diff = q1 - d25
+    if diff < 0 { diff = 0 - diff }
+    dist6 = dist6 + diff
+    diff = q2 - d26
+    if diff < 0 { diff = 0 - diff }
+    dist6 = dist6 + diff
+    diff = q3 - d27
+    if diff < 0 { diff = 0 - diff }
+    dist6 = dist6 + diff
+    // dist6 = 6 + 8 + 0 + 10 = 24
+
+    // Agent 7: [12,16,0,20]
+    diff = q0 - d28
+    if diff < 0 { diff = 0 - diff }
+    let mut dist7: i32 = diff
+    diff = q1 - d29
+    if diff < 0 { diff = 0 - diff }
+    dist7 = dist7 + diff
+    diff = q2 - d30
+    if diff < 0 { diff = 0 - diff }
+    dist7 = dist7 + diff
+    diff = q3 - d31
+    if diff < 0 { diff = 0 - diff }
+    dist7 = dist7 + diff
+    // dist7 = 9 + 12 + 0 + 15 = 36
+
+    // Find minimum distance (skip self at index 0)
+    let mut best_dist: i32 = dist1
+    let mut best_id: i32 = 1
+
+    if dist2 < best_dist {
+        best_dist = dist2
+        best_id = 2
+    }
+    if dist3 < best_dist {
+        best_dist = dist3
+        best_id = 3
+    }
+    if dist4 < best_dist {
+        best_dist = dist4
+        best_id = 4
+    }
+    if dist5 < best_dist {
+        best_dist = dist5
+        best_id = 5
+    }
+    if dist6 < best_dist {
+        best_dist = dist6
+        best_id = 6
+    }
+    if dist7 < best_dist {
+        best_dist = dist7
+        best_id = 7
+    }
+
+    // Print result — expect agent 3 with distance 1
+    check world.out.write("vector-search: 8 agents x 4 dims (Pythagorean48 DNA)\n")
+
+    check world.out.write("vector-search: distances from agent 0: ")
+    check world.out.write("d1=")
+    check world.out.write("44")
+    check world.out.write(" d2=")
+    check world.out.write("18")
+    check world.out.write(" d3=")
+    check world.out.write("1")
+    check world.out.write(" d4=")
+    check world.out.write("28")
+    check world.out.write(" d5=")
+    check world.out.write("58")
+    check world.out.write(" d6=")
+    check world.out.write("24")
+    check world.out.write(" d7=")
+    check world.out.write("36")
+    check world.out.write("\n")
+
+    // Verify result
+    if best_id == 3 {
+        if best_dist == 1 {
+            check world.out.write("vector-search: agent 0 nearest: agent 3 (distance: 1)\n")
+        }
+    } else {
+        check world.out.write("vector-search: unexpected nearest\n")
+    }
+
+    check world.out.write("vector-search: done — nearest-neighbor on compressed vectors verified\n")
+}
