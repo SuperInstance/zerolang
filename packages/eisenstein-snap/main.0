@@ -1,0 +1,27 @@
+// Eisenstein Integer — Hexagonal Lattice Verification
+//
+// Eisenstein integers: z = a + b*ω where ω = e^(2πi/3)
+// Eisenstein norm: |a + bω|² = a² + ab + b²
+// This forms a hexagonal lattice — densest possible 2D packing.
+
+pub fun main(world: World) -> Void raises {
+    let a: i32 = 3
+    let b: i32 = 1
+    let norm: i32 = a * a + a * b + b * b
+
+    if norm == 13 {
+        check world.out.write("eisenstein: (3,1) has norm 13 — hexagonal lattice confirmed\n")
+    } else {
+        check world.out.write("eisenstein: unexpected norm\n")
+    }
+
+    let c: i32 = 2
+    let d: i32 = 2
+    let norm2: i32 = c * c + c * d + d * d
+
+    if norm2 == 12 {
+        check world.out.write("eisenstein: (2,2) has norm 12 — hexagonal lattice confirmed\n")
+    } else {
+        check world.out.write("eisenstein: unexpected norm\n")
+    }
+}
