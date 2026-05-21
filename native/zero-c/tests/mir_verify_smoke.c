@@ -15,13 +15,34 @@ void z_backend_blocker_set(ZBackendBlocker *blocker, const char *target, const c
   snprintf(blocker->unsupported_feature, sizeof(blocker->unsupported_feature), "%s", unsupported_feature ? unsupported_feature : "");
 }
 
+static unsigned smoke_type_byte_size(IrTypeKind type) {
+  switch (type) {
+    case IR_TYPE_BOOL:
+    case IR_TYPE_U8: return 1;
+    case IR_TYPE_U16: return 2;
+    case IR_TYPE_I32:
+    case IR_TYPE_USIZE:
+    case IR_TYPE_U32: return 4;
+    case IR_TYPE_I64:
+    case IR_TYPE_U64: return 8;
+    default: return 0;
+  }
+}
+
+static unsigned smoke_type_alignment(IrTypeKind type) {
+  unsigned size = smoke_type_byte_size(type);
+  return size >= 4 ? 4 : (size ? size : 1);
+}
+
 static IrLocal scalar_local(const char *name, IrTypeKind type, unsigned index, bool is_param) {
-  unsigned byte_size = type == IR_TYPE_BYTE_VIEW || type == IR_TYPE_ALLOC || type == IR_TYPE_VEC || type == IR_TYPE_MAYBE_SCALAR ? 16 : 8;
+  unsigned byte_size = type == IR_TYPE_BYTE_VIEW || type == IR_TYPE_ALLOC || type == IR_TYPE_VEC || type == IR_TYPE_MAYBE_SCALAR ? 16 : (type == IR_TYPE_MAYBE_BYTE_VIEW ? 24 : 8);
+  unsigned frame_offset = (index + 1) * 16;
+  if (frame_offset < byte_size) frame_offset = byte_size;
   return (IrLocal){
     .name = (char *)name,
     .type = type,
     .index = index,
-    .frame_offset = (index + 1) * 16,
+    .frame_offset = frame_offset,
     .byte_size = byte_size,
     .alignment = 8,
     .is_param = is_param,
@@ -31,15 +52,17 @@ static IrLocal scalar_local(const char *name, IrTypeKind type, unsigned index, b
 }
 
 static IrLocal array_local(const char *name, IrTypeKind element_type, unsigned index) {
+  unsigned byte_size = smoke_type_byte_size(element_type) * 4;
+  unsigned frame_offset = byte_size > 8 ? byte_size : (index + 1) * 8;
   return (IrLocal){
     .name = (char *)name,
     .type = IR_TYPE_UNSUPPORTED,
     .element_type = element_type,
     .index = index,
-    .frame_offset = (index + 1) * 8,
+    .frame_offset = frame_offset,
     .array_len = 4,
-    .byte_size = 8,
-    .alignment = 8,
+    .byte_size = byte_size,
+    .alignment = smoke_type_alignment(element_type),
     .is_array = true,
     .line = 1,
     .column = 1
@@ -380,6 +403,7 @@ static void fixed_buf_alloc_unknown_maybe_storage_fails(void) {
     scalar_local("maybe", IR_TYPE_MAYBE_BYTE_VIEW, 0, false),
     scalar_local("alloc", IR_TYPE_ALLOC, 1, false)
   };
+  locals[1].frame_offset = 48;
   IrValue bytes = value(IR_VALUE_MAYBE_VALUE, IR_TYPE_BYTE_VIEW);
   bytes.local_index = 0;
   IrValue alloc = value(IR_VALUE_FIXED_BUF_ALLOC, IR_TYPE_ALLOC);
@@ -426,6 +450,141 @@ static void vec_init_known_maybe_storage_passes(void) {
   ir.direct_allocator_helper_count = 2;
   ir.direct_buffer_helper_count = 1;
   expect_ok("Vec init known Maybe storage", &ir);
+}
+
+static void vec_init_maybe_before_mutable_assignment_fails(void) {
+  IrLocal locals[] = {
+    array_local("storage", IR_TYPE_U8, 0),
+    scalar_local("alloc", IR_TYPE_ALLOC, 1, false),
+    scalar_local("maybe", IR_TYPE_MAYBE_BYTE_VIEW, 2, false),
+    scalar_local("vec", IR_TYPE_VEC, 3, false)
+  };
+  locals[0].is_mutable = true;
+  locals[2].byte_size = 24;
+  locals[2].frame_offset = 56;
+  locals[3].frame_offset = 72;
+  IrValue storage = value(IR_VALUE_ARRAY_BYTE_VIEW, IR_TYPE_BYTE_VIEW);
+  storage.array_index = 0;
+  storage.data_len = 4;
+  IrValue alloc = value(IR_VALUE_FIXED_BUF_ALLOC, IR_TYPE_ALLOC);
+  alloc.left = &storage;
+  IrValue length = value(IR_VALUE_INT, IR_TYPE_USIZE);
+  length.int_value = 4;
+  IrValue bytes = value(IR_VALUE_ALLOC_BYTES, IR_TYPE_MAYBE_BYTE_VIEW);
+  bytes.local_index = 1;
+  bytes.left = &length;
+  IrValue maybe = value(IR_VALUE_MAYBE_VALUE, IR_TYPE_BYTE_VIEW);
+  maybe.local_index = 2;
+  IrValue vec = value(IR_VALUE_VEC_INIT, IR_TYPE_VEC);
+  vec.left = &maybe;
+  IrInstr instrs[] = {
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 1, .value = &alloc, .line = 1, .column = 1},
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 3, .value = &vec, .line = 1, .column = 1},
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 2, .value = &bytes, .line = 1, .column = 1}
+  };
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 4, 0, instrs, 3, 80, false);
+  IrProgram ir = program(&fun, 1);
+  ir.direct_allocator_helper_count = 2;
+  ir.direct_buffer_helper_count = 1;
+  expect_fail("Vec init Maybe before mutable assignment", &ir, "invalid Vec helper value");
+}
+
+static void vec_init_maybe_branch_only_assignment_fails(void) {
+  IrLocal locals[] = {
+    array_local("storage", IR_TYPE_U8, 0),
+    scalar_local("alloc", IR_TYPE_ALLOC, 1, false),
+    scalar_local("maybe", IR_TYPE_MAYBE_BYTE_VIEW, 2, false),
+    scalar_local("vec", IR_TYPE_VEC, 3, false)
+  };
+  locals[0].is_mutable = true;
+  locals[2].byte_size = 24;
+  locals[2].frame_offset = 56;
+  locals[3].frame_offset = 72;
+  IrValue storage = value(IR_VALUE_ARRAY_BYTE_VIEW, IR_TYPE_BYTE_VIEW);
+  storage.array_index = 0;
+  storage.data_len = 4;
+  IrValue alloc = value(IR_VALUE_FIXED_BUF_ALLOC, IR_TYPE_ALLOC);
+  alloc.left = &storage;
+  IrValue length = value(IR_VALUE_INT, IR_TYPE_USIZE);
+  length.int_value = 4;
+  IrValue bytes = value(IR_VALUE_ALLOC_BYTES, IR_TYPE_MAYBE_BYTE_VIEW);
+  bytes.local_index = 1;
+  bytes.left = &length;
+  IrInstr then_set = {.kind = IR_INSTR_LOCAL_SET, .local_index = 2, .value = &bytes, .line = 1, .column = 1};
+  IrValue cond = value(IR_VALUE_BOOL, IR_TYPE_BOOL);
+  cond.int_value = 1;
+  IrInstr branch = {.kind = IR_INSTR_IF, .value = &cond, .then_instrs = &then_set, .then_len = 1, .line = 1, .column = 1};
+  IrValue maybe = value(IR_VALUE_MAYBE_VALUE, IR_TYPE_BYTE_VIEW);
+  maybe.local_index = 2;
+  IrValue vec = value(IR_VALUE_VEC_INIT, IR_TYPE_VEC);
+  vec.left = &maybe;
+  IrInstr instrs[] = {
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 1, .value = &alloc, .line = 1, .column = 1},
+    branch,
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 3, .value = &vec, .line = 1, .column = 1}
+  };
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 4, 0, instrs, 3, 80, false);
+  IrProgram ir = program(&fun, 1);
+  ir.direct_allocator_helper_count = 2;
+  ir.direct_buffer_helper_count = 1;
+  expect_fail("Vec init Maybe branch-only assignment", &ir, "invalid Vec helper value");
+}
+
+static void vec_init_maybe_immutable_overwrite_fails(void) {
+  IrLocal locals[] = {
+    array_local("storage", IR_TYPE_U8, 0),
+    scalar_local("alloc", IR_TYPE_ALLOC, 1, false),
+    scalar_local("maybe", IR_TYPE_MAYBE_BYTE_VIEW, 2, false),
+    scalar_local("vec", IR_TYPE_VEC, 3, false)
+  };
+  locals[0].is_mutable = true;
+  locals[2].byte_size = 24;
+  locals[2].frame_offset = 56;
+  locals[3].frame_offset = 72;
+  IrValue storage = value(IR_VALUE_ARRAY_BYTE_VIEW, IR_TYPE_BYTE_VIEW);
+  storage.array_index = 0;
+  storage.data_len = 4;
+  IrValue alloc = value(IR_VALUE_FIXED_BUF_ALLOC, IR_TYPE_ALLOC);
+  alloc.left = &storage;
+  IrValue length = value(IR_VALUE_INT, IR_TYPE_USIZE);
+  length.int_value = 4;
+  IrValue bytes = value(IR_VALUE_ALLOC_BYTES, IR_TYPE_MAYBE_BYTE_VIEW);
+  bytes.local_index = 1;
+  bytes.left = &length;
+  IrValue args = value(IR_VALUE_ARGS_GET, IR_TYPE_MAYBE_BYTE_VIEW);
+  args.left = &length;
+  IrValue maybe = value(IR_VALUE_MAYBE_VALUE, IR_TYPE_BYTE_VIEW);
+  maybe.local_index = 2;
+  IrValue vec = value(IR_VALUE_VEC_INIT, IR_TYPE_VEC);
+  vec.left = &maybe;
+  IrInstr instrs[] = {
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 1, .value = &alloc, .line = 1, .column = 1},
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 2, .value = &bytes, .line = 1, .column = 1},
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 2, .value = &args, .line = 1, .column = 1},
+    {.kind = IR_INSTR_LOCAL_SET, .local_index = 3, .value = &vec, .line = 1, .column = 1}
+  };
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 4, 0, instrs, 4, 80, false);
+  IrProgram ir = program(&fun, 1);
+  ir.direct_allocator_helper_count = 2;
+  ir.direct_buffer_helper_count = 1;
+  expect_fail("Vec init Maybe immutable overwrite", &ir, "invalid Vec helper value");
+}
+
+static void http_fetch_immutable_response_fails(void) {
+  IrValue request = byte_view_value();
+  IrValue response = byte_view_value();
+  IrValue timeout = value(IR_VALUE_INT, IR_TYPE_I64);
+  IrValue fetch = value(IR_VALUE_HTTP_FETCH, IR_TYPE_U64);
+  fetch.left = &request;
+  fetch.right = &response;
+  fetch.index = &timeout;
+  IrInstr ret = {.kind = IR_INSTR_RETURN, .value = &fetch, .line = 1, .column = 1};
+  IrFunction fun = function("main", IR_TYPE_U64, IR_TYPE_U64, NULL, 0, 0, &ret, 1, 0, false);
+  IrProgram ir = program(&fun, 1);
+  ir.direct_runtime_helper_count = 2;
+  ir.direct_host_runtime_import_count = 2;
+  ir.direct_http_runtime_import_count = 1;
+  expect_fail("HTTP fetch immutable response", &ir, "invalid HTTP fetch response buffer");
 }
 
 static void helper_result_type_mismatch_fails(void) {
@@ -510,15 +669,19 @@ static void host_runtime_import_contract_fails(void) {
 }
 
 static void http_runtime_import_contract_fails(void) {
+  IrLocal locals[] = {array_local("response", IR_TYPE_U8, 0)};
+  locals[0].is_mutable = true;
   IrValue request = byte_view_value();
-  IrValue response = byte_view_value();
+  IrValue response = value(IR_VALUE_ARRAY_BYTE_VIEW, IR_TYPE_BYTE_VIEW);
+  response.array_index = 0;
+  response.data_len = 4;
   IrValue timeout = value(IR_VALUE_INT, IR_TYPE_I64);
   IrValue fetch = value(IR_VALUE_HTTP_FETCH, IR_TYPE_U64);
   fetch.left = &request;
   fetch.right = &response;
   fetch.index = &timeout;
   IrInstr ret = {.kind = IR_INSTR_RETURN, .value = &fetch, .line = 1, .column = 1};
-  IrFunction fun = function("main", IR_TYPE_U64, IR_TYPE_U64, NULL, 0, 0, &ret, 1, 0, false);
+  IrFunction fun = function("main", IR_TYPE_U64, IR_TYPE_U64, locals, 1, 0, &ret, 1, 16, false);
   IrProgram ir = program(&fun, 1);
   ir.direct_runtime_helper_count = 2;
   ir.direct_host_runtime_import_count = 2;
@@ -558,6 +721,10 @@ int main(void) {
   vec_init_immutable_storage_fails();
   fixed_buf_alloc_unknown_maybe_storage_fails();
   vec_init_known_maybe_storage_passes();
+  vec_init_maybe_before_mutable_assignment_fails();
+  vec_init_maybe_branch_only_assignment_fails();
+  vec_init_maybe_immutable_overwrite_fails();
+  http_fetch_immutable_response_fails();
   helper_result_type_mismatch_fails();
   byte_view_len_u32_passes();
   maybe_has_non_maybe_local_fails();

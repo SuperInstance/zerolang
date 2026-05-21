@@ -1,6 +1,8 @@
 #include "mir_verify.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static const char *mir_type_kind_name(IrTypeKind type) {
   switch (type) {
@@ -59,6 +61,28 @@ static unsigned mir_type_byte_size(IrTypeKind type) {
   }
 }
 
+static unsigned mir_type_storage_min_byte_size(const IrLocal *local) {
+  if (!local) return 0;
+  if (local->is_array) {
+    unsigned element_size = mir_type_byte_size(local->element_type);
+    if (element_size == 0 || local->array_len == 0) return 0;
+    if (local->array_len > (unsigned)(~0u) / element_size) return 0;
+    return element_size * local->array_len;
+  }
+  if (local->is_record) return 1;
+  switch (local->type) {
+    case IR_TYPE_BYTE_VIEW:
+    case IR_TYPE_ALLOC:
+    case IR_TYPE_VEC:
+    case IR_TYPE_MAYBE_SCALAR:
+      return 16;
+    case IR_TYPE_MAYBE_BYTE_VIEW:
+      return 24;
+    default:
+      return mir_type_byte_size(local->type);
+  }
+}
+
 static void mir_verify_mark_unsupported(IrProgram *ir, const char *message, int line, int column, const char *actual) {
   if (!ir || !ir->mir_valid) return;
   ir->mir_valid = false;
@@ -101,12 +125,52 @@ typedef struct {
   MirCountRequirement http_runtime_imports;
 } MirHelperRequirements;
 
+typedef struct {
+  bool *mutable_maybe_bytes;
+  size_t len;
+} MirVerifierState;
+
 static void mir_require_count(MirCountRequirement *req, size_t count, int line, int column, const char *reason) {
   if (!req || count <= req->count) return;
   req->count = count;
   req->line = line;
   req->column = column;
   req->reason = reason;
+}
+
+static bool mir_state_init(IrProgram *ir, MirVerifierState *state, size_t len, int line, int column) {
+  if (!state) return false;
+  *state = (MirVerifierState){.len = len};
+  if (len == 0) return true;
+  state->mutable_maybe_bytes = calloc(len, sizeof(bool));
+  if (state->mutable_maybe_bytes) return true;
+  mir_verify_mark_unsupported(ir, "MIR verifier could not allocate control-flow state", line, column, "out of memory while tracking Maybe byte storage");
+  return false;
+}
+
+static bool mir_state_clone(IrProgram *ir, MirVerifierState *dest, const MirVerifierState *source, int line, int column) {
+  if (!dest || !source) return false;
+  if (!mir_state_init(ir, dest, source->len, line, column)) return false;
+  if (source->len > 0) memcpy(dest->mutable_maybe_bytes, source->mutable_maybe_bytes, source->len * sizeof(bool));
+  return true;
+}
+
+static void mir_state_free(MirVerifierState *state) {
+  if (!state) return;
+  free(state->mutable_maybe_bytes);
+  *state = (MirVerifierState){0};
+}
+
+static bool mir_state_has_mutable_maybe_byte_payload(const MirVerifierState *state, unsigned local_index) {
+  return state && local_index < state->len && state->mutable_maybe_bytes && state->mutable_maybe_bytes[local_index];
+}
+
+static bool mir_state_intersect_from(MirVerifierState *state, const MirVerifierState *left, const MirVerifierState *right) {
+  if (!state || !left || !right || state->len != left->len || state->len != right->len) return false;
+  for (size_t i = 0; i < state->len; i++) {
+    state->mutable_maybe_bytes[i] = left->mutable_maybe_bytes[i] && right->mutable_maybe_bytes[i];
+  }
+  return true;
 }
 
 static bool mir_verify_direct_function_contract(IrProgram *ir, const IrFunction *fun) {
@@ -143,6 +207,13 @@ static bool mir_verify_direct_function_contract(IrProgram *ir, const IrFunction 
     if (local->byte_size == 0 || local->alignment == 0) {
       char actual[160];
       snprintf(actual, sizeof(actual), "local %s has size %u alignment %u", local->name ? local->name : "<unnamed>", local->byte_size, local->alignment);
+      mir_verify_mark_unsupported(ir, "MIR verifier found invalid local storage layout", local->line, local->column, actual);
+      return false;
+    }
+    unsigned min_byte_size = mir_type_storage_min_byte_size(local);
+    if (min_byte_size == 0 || local->byte_size < min_byte_size) {
+      char actual[192];
+      snprintf(actual, sizeof(actual), "local %s has size %u but needs at least %u", local->name ? local->name : "<unnamed>", local->byte_size, min_byte_size);
       mir_verify_mark_unsupported(ir, "MIR verifier found invalid local storage layout", local->line, local->column, actual);
       return false;
     }
@@ -281,23 +352,7 @@ static bool mir_value_produces_mutable_byte_payload(const IrValue *value) {
           value->kind == IR_VALUE_FS_TEMP_NAME);
 }
 
-static bool mir_instrs_define_mutable_byte_payload(const IrInstr *instrs, size_t len, unsigned local_index) {
-  for (size_t i = 0; i < len; i++) {
-    const IrInstr *instr = &instrs[i];
-    if (instr->kind == IR_INSTR_LOCAL_SET &&
-        instr->local_index == local_index &&
-        mir_value_produces_mutable_byte_payload(instr->value)) {
-      return true;
-    }
-    if (mir_instrs_define_mutable_byte_payload(instr->then_instrs, instr->then_len, local_index) ||
-        mir_instrs_define_mutable_byte_payload(instr->else_instrs, instr->else_len, local_index)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool mir_verify_mutable_byte_storage(IrProgram *ir, const IrFunction *fun, const IrValue *value, const char *message, const char *role) {
+static bool mir_verify_mutable_byte_storage(IrProgram *ir, const IrFunction *fun, const MirVerifierState *state, const IrValue *value, const char *message, const char *role) {
   if (!mir_verify_value_type(ir, value, IR_TYPE_BYTE_VIEW, message, role)) return false;
   if (value->kind == IR_VALUE_LOCAL) {
     if (!mir_verify_local_index(ir, fun, value->local_index, value->line, value->column, message)) return false;
@@ -321,7 +376,7 @@ static bool mir_verify_mutable_byte_storage(IrProgram *ir, const IrFunction *fun
     if (!mir_verify_local_index(ir, fun, value->local_index, value->line, value->column, message)) return false;
     const IrLocal *local = &fun->locals[value->local_index];
     if (local->type == IR_TYPE_MAYBE_BYTE_VIEW &&
-        mir_instrs_define_mutable_byte_payload(fun->instrs, fun->instr_len, value->local_index)) {
+        mir_state_has_mutable_maybe_byte_payload(state, value->local_index)) {
       return true;
     }
     char actual[192];
@@ -335,13 +390,13 @@ static bool mir_verify_mutable_byte_storage(IrProgram *ir, const IrFunction *fun
   return false;
 }
 
-static bool mir_verify_direct_helper_value_contract(IrProgram *ir, const IrFunction *fun, const IrValue *value, MirHelperRequirements *requirements) {
+static bool mir_verify_direct_helper_value_contract(IrProgram *ir, const IrFunction *fun, const MirVerifierState *state, const IrValue *value, MirHelperRequirements *requirements) {
   if (!ir || !ir->mir_valid || !value) return ir && ir->mir_valid;
   switch (value->kind) {
     case IR_VALUE_FIXED_BUF_ALLOC:
       mir_require_count(&requirements->allocator_helpers, 1, value->line, value->column, "std.mem.fixedBufAlloc");
       if (!mir_verify_helper_result_type(ir, value, IR_TYPE_ALLOC, "FixedBufAlloc result")) return false;
-      return mir_verify_mutable_byte_storage(ir, fun, value->left, "MIR verifier found invalid FixedBufAlloc helper value", "allocator storage");
+      return mir_verify_mutable_byte_storage(ir, fun, state, value->left, "MIR verifier found invalid FixedBufAlloc helper value", "allocator storage");
     case IR_VALUE_ALLOC_BYTES:
       mir_require_count(&requirements->allocator_helpers, 2, value->line, value->column, "std.mem.allocBytes");
       if (!mir_verify_helper_result_type(ir, value, IR_TYPE_MAYBE_BYTE_VIEW, "allocation result")) return false;
@@ -350,7 +405,7 @@ static bool mir_verify_direct_helper_value_contract(IrProgram *ir, const IrFunct
     case IR_VALUE_VEC_INIT:
       mir_require_count(&requirements->buffer_helpers, 1, value->line, value->column, "std.mem.vec");
       if (!mir_verify_helper_result_type(ir, value, IR_TYPE_VEC, "Vec result")) return false;
-      return mir_verify_mutable_byte_storage(ir, fun, value->left, "MIR verifier found invalid Vec helper value", "Vec storage");
+      return mir_verify_mutable_byte_storage(ir, fun, state, value->left, "MIR verifier found invalid Vec helper value", "Vec storage");
     case IR_VALUE_VEC_PUSH:
       mir_require_count(&requirements->buffer_helpers, 2, value->line, value->column, "std.mem.vecPush");
       if (!mir_verify_helper_result_type(ir, value, IR_TYPE_BOOL, "Vec push result")) return false;
@@ -380,7 +435,7 @@ static bool mir_verify_direct_helper_value_contract(IrProgram *ir, const IrFunct
       mir_require_count(&requirements->http_runtime_imports, 1, value->line, value->column, "std.http.fetch");
       if (!mir_verify_helper_result_type(ir, value, IR_TYPE_U64, "HTTP fetch result")) return false;
       if (!mir_verify_value_type(ir, value->left, IR_TYPE_BYTE_VIEW, "MIR verifier found invalid HTTP fetch request", "HTTP request")) return false;
-      if (!mir_verify_value_type(ir, value->right, IR_TYPE_BYTE_VIEW, "MIR verifier found invalid HTTP fetch response buffer", "HTTP response buffer")) return false;
+      if (!mir_verify_mutable_byte_storage(ir, fun, state, value->right, "MIR verifier found invalid HTTP fetch response buffer", "HTTP response buffer")) return false;
       return mir_verify_value_type(ir, value->index, IR_TYPE_I64, "MIR verifier found invalid HTTP fetch timeout", "HTTP timeout");
     case IR_VALUE_HTTP_RESULT_OK:
     case IR_VALUE_HTTP_RESULT_STATUS:
@@ -488,11 +543,11 @@ static bool mir_verify_byte_view_value_contract(IrProgram *ir, const IrValue *va
   return true;
 }
 
-static bool mir_verify_direct_value(IrProgram *ir, const IrFunction *fun, const IrValue *value, MirHelperRequirements *requirements) {
+static bool mir_verify_direct_value(IrProgram *ir, const IrFunction *fun, const MirVerifierState *state, const IrValue *value, MirHelperRequirements *requirements) {
   if (!ir || !ir->mir_valid) return false;
   if (!value) return true;
   if (value->kind == IR_VALUE_CALL && !mir_verify_direct_call_contract(ir, value)) return false;
-  if (!mir_verify_direct_helper_value_contract(ir, fun, value, requirements)) return false;
+  if (!mir_verify_direct_helper_value_contract(ir, fun, state, value, requirements)) return false;
   if (value->kind == IR_VALUE_LOCAL) {
     if (!mir_verify_local_index(ir, fun, value->local_index, value->line, value->column, "MIR verifier found local value outside the local table")) return false;
     const IrLocal *local = &fun->locals[value->local_index];
@@ -528,11 +583,11 @@ static bool mir_verify_direct_value(IrProgram *ir, const IrFunction *fun, const 
     if (!mir_verify_value_is_integer(ir, value->index, "MIR verifier found invalid byte-view index load index", "byte-view index")) return false;
   }
   for (size_t i = 0; i < value->arg_len; i++) {
-    if (!mir_verify_direct_value(ir, fun, value->args[i], requirements)) return false;
+    if (!mir_verify_direct_value(ir, fun, state, value->args[i], requirements)) return false;
   }
-  if (!mir_verify_direct_value(ir, fun, value->index, requirements)) return false;
-  if (!mir_verify_direct_value(ir, fun, value->left, requirements)) return false;
-  if (!mir_verify_direct_value(ir, fun, value->right, requirements)) return false;
+  if (!mir_verify_direct_value(ir, fun, state, value->index, requirements)) return false;
+  if (!mir_verify_direct_value(ir, fun, state, value->left, requirements)) return false;
+  if (!mir_verify_direct_value(ir, fun, state, value->right, requirements)) return false;
   return true;
 }
 
@@ -657,15 +712,79 @@ static bool mir_verify_direct_instr_contract(IrProgram *ir, const IrFunction *fu
   return true;
 }
 
-static bool mir_verify_direct_instrs(IrProgram *ir, const IrFunction *fun, const IrInstr *instrs, size_t len, MirHelperRequirements *requirements) {
+static bool mir_verify_direct_instrs(IrProgram *ir, const IrFunction *fun, const IrInstr *instrs, size_t len, MirVerifierState *state, MirHelperRequirements *requirements);
+
+static void mir_apply_instr_state_effect(const IrFunction *fun, const IrInstr *instr, MirVerifierState *state) {
+  if (!fun || !instr || !state || instr->kind != IR_INSTR_LOCAL_SET) return;
+  if (instr->local_index >= fun->local_len || instr->local_index >= state->len || !state->mutable_maybe_bytes) return;
+  const IrLocal *local = &fun->locals[instr->local_index];
+  if (local->type != IR_TYPE_MAYBE_BYTE_VIEW) return;
+  state->mutable_maybe_bytes[instr->local_index] = mir_value_produces_mutable_byte_payload(instr->value);
+}
+
+static bool mir_verify_branch_instrs(IrProgram *ir, const IrFunction *fun, const IrInstr *instr, MirVerifierState *state, MirHelperRequirements *requirements) {
+  MirVerifierState then_state = {0};
+  MirVerifierState else_state = {0};
+  if (!mir_state_clone(ir, &then_state, state, instr->line, instr->column)) return false;
+  if (!mir_state_clone(ir, &else_state, state, instr->line, instr->column)) {
+    mir_state_free(&then_state);
+    return false;
+  }
+  bool ok = mir_verify_direct_instrs(ir, fun, instr->then_instrs, instr->then_len, &then_state, requirements) &&
+            mir_verify_direct_instrs(ir, fun, instr->else_instrs, instr->else_len, &else_state, requirements) &&
+            mir_state_intersect_from(state, &then_state, &else_state);
+  mir_state_free(&then_state);
+  mir_state_free(&else_state);
+  return ok;
+}
+
+static bool mir_verify_loop_instrs(IrProgram *ir, const IrFunction *fun, const IrInstr *instr, MirVerifierState *state, MirHelperRequirements *requirements) {
+  MirVerifierState entry_state = {0};
+  if (!mir_state_clone(ir, &entry_state, state, instr->line, instr->column)) return false;
+  bool changed = false;
+  do {
+    MirVerifierState body_state = {0};
+    if (!mir_state_clone(ir, &body_state, &entry_state, instr->line, instr->column)) {
+      mir_state_free(&entry_state);
+      return false;
+    }
+    bool ok = mir_verify_direct_instrs(ir, fun, instr->then_instrs, instr->then_len, &body_state, requirements);
+    if (!ok) {
+      mir_state_free(&body_state);
+      mir_state_free(&entry_state);
+      return false;
+    }
+    changed = false;
+    for (size_t i = 0; i < entry_state.len; i++) {
+      bool next = entry_state.mutable_maybe_bytes[i] && body_state.mutable_maybe_bytes[i];
+      if (next != entry_state.mutable_maybe_bytes[i]) changed = true;
+      entry_state.mutable_maybe_bytes[i] = next;
+    }
+    mir_state_free(&body_state);
+  } while (changed);
+  if (state->len == entry_state.len && state->len > 0) {
+    memcpy(state->mutable_maybe_bytes, entry_state.mutable_maybe_bytes, state->len * sizeof(bool));
+  }
+  mir_state_free(&entry_state);
+  return true;
+}
+
+static bool mir_verify_direct_instrs(IrProgram *ir, const IrFunction *fun, const IrInstr *instrs, size_t len, MirVerifierState *state, MirHelperRequirements *requirements) {
   if (!ir || !ir->mir_valid) return false;
   for (size_t i = 0; i < len; i++) {
     const IrInstr *instr = &instrs[i];
-    if (!mir_verify_direct_value(ir, fun, instr->value, requirements)) return false;
-    if (!mir_verify_direct_value(ir, fun, instr->index, requirements)) return false;
+    if (!mir_verify_direct_value(ir, fun, state, instr->value, requirements)) return false;
+    if (!mir_verify_direct_value(ir, fun, state, instr->index, requirements)) return false;
     if (!mir_verify_direct_instr_contract(ir, fun, instr, requirements)) return false;
-    if (!mir_verify_direct_instrs(ir, fun, instr->then_instrs, instr->then_len, requirements)) return false;
-    if (!mir_verify_direct_instrs(ir, fun, instr->else_instrs, instr->else_len, requirements)) return false;
+    if (instr->kind == IR_INSTR_IF) {
+      if (!mir_verify_branch_instrs(ir, fun, instr, state, requirements)) return false;
+      continue;
+    }
+    if (instr->kind == IR_INSTR_WHILE) {
+      if (!mir_verify_loop_instrs(ir, fun, instr, state, requirements)) return false;
+      continue;
+    }
+    mir_apply_instr_state_effect(fun, instr, state);
   }
   return true;
 }
@@ -695,7 +814,12 @@ bool z_mir_verify_direct_contracts(IrProgram *ir) {
   }
   MirHelperRequirements requirements = {0};
   for (size_t i = 0; i < ir->function_len; i++) {
-    if (!mir_verify_direct_instrs(ir, &ir->functions[i], ir->functions[i].instrs, ir->functions[i].instr_len, &requirements)) return false;
+    IrFunction *fun = &ir->functions[i];
+    MirVerifierState state = {0};
+    if (!mir_state_init(ir, &state, fun->local_len, fun->line, fun->column)) return false;
+    bool ok = mir_verify_direct_instrs(ir, fun, fun->instrs, fun->instr_len, &state, &requirements);
+    mir_state_free(&state);
+    if (!ok) return false;
   }
   return mir_verify_direct_helper_requirements(ir, &requirements);
 }
