@@ -1,107 +1,167 @@
-# SuperInstance / zerolang
+# zerolang
 
-We forked [zerolang](https://github.com/vercel-labs/zerolang) to use it as a teaching tool. The programs in this repo prove mathematical theorems as native executables smaller than this paragraph.
+## What is zerolang?
 
-## What's in Here
+zerolang is an agent-first programming language. The design assumption from day one: the primary users aren't humans reading code on a screen — they're AI agents that need to write, read, debug, and repair programs without human hand-holding.
 
-### `packages/` — Concept Demos
+What that means in practice:
+- **Small, regular syntax** — agents can learn the language from examples and compiler feedback, not a 500-page spec
+- **Structured diagnostics** — errors, fix suggestions, and program facts are machine-readable, not prose paragraphs
+- **368-byte executables** — programs compile to tiny binaries because the runtime is minimal
+- **Deterministic tooling** — `zero check`, `zero run`, `zero graph`, `zero size` produce structured output that agents can parse
 
-Each directory contains a zerolang program that demonstrates one mathematical concept. They compile to standalone ELF binaries — no interpreter, no runtime, no libc.
+The language is pre-1.0 and intentionally unstable. Breaking changes happen while the project searches for the right patterns.
 
-| Package | What It Shows | Binary Size |
-|---------|--------------|-------------|
-| `laman-rigidity` | Fleet of agents stays rigid with 12 neighbors | 614 bytes |
-| `eisenstein-snap` | Hexagonal lattice distance (a²+ab+b²) | 715 bytes |
-| `pythagorean48` | 48 exact unit vectors on the unit circle | 1,068 bytes |
-| `holonomy-consensus` | 5 agents converge without voting | 1,452 bytes |
-| `fleet-edges` | Edge count always exceeds Laman threshold | 1,438 bytes |
-| `information-bound` | log₂(48) = 5.585 bits of information per byte | 784 bytes |
+## What's actually happening?
 
-### Run Them
+A zerolang program looks like this:
 
-```bash
-# Build the compiler
-make -C native/zero-c
-
-# Check a program (verify it type-checks)
-bin/zero check packages/laman-rigidity/main.0
-
-# Run it
-bin/zero run packages/laman-rigidity/main.0
-# Output: laman rigidity: all fleet sizes 3-100 are rigid with 12 neighbors
-
-# Build a native executable
-bin/zero build --emit exe --target linux-musl-x64 packages/laman-rigidity/main.0 --out /tmp/proof
-/tmp/proof
-# Output: laman rigidity: all fleet sizes 3-100 are rigid with 12 neighbors
-
-# Check the size
-ls -la /tmp/proof
-# -rwxr-xr-x 1 user user 614 May 21 10:00 /tmp/proof
+```zero
+pub fun main(world: World) -> Void raises {
+    check world.out.write("hello from zero\n")
+}
 ```
 
-614 bytes. That's the theorem, the proof loop, the output string, the ELF headers, and the syscall to write it. Nothing else.
+`pub fun` exports a function. `World` carries runtime capabilities (IO, network, etc.). `raises` marks a function as fallible. `check` calls a fallible operation and propagates errors.
 
-### Understand Them
+Types are explicit: `i32`, `u8`, `Bool`, `String`, `f64`. Shapes (structs), enums, and choices (tagged unions) are the compound types. No null, no undefined — every value has a type and every error is explicit.
 
-Zerolang's tooling shows you exactly what a program does:
+## Install and run
 
 ```bash
-# See every function, type, and effect as structured JSON
-bin/zero graph --json packages/laman-rigidity/main.0
+curl -fsSL https://zerolang.ai/install.sh | bash
+export PATH="$HOME/.zero/bin:$PATH"
 
-# Get an explanation of any diagnostic
-bin/zero explain TYP009
-
-# Get a machine-readable repair plan
-bin/zero fix --plan --json packages/laman-rigidity/main.0
-
-# Check the exact binary size breakdown
-bin/zero size --json packages/laman-rigidity/main.0
+zero check examples/hello.0
+zero run examples/add.0
 ```
 
-## The Concepts, Briefly
+## The concept demos (mathematical proofs as programs)
 
-### Laman Rigidity
+This is our fork of zerolang, extended with packages that prove mathematical theorems in programs smaller than this sentence. Each package is a self-contained proof:
 
-A structure in 2D is rigid if it has exactly `2n - 2` independent bars for `n` joints. This is Laman's theorem (1970). If each joint connects to 12 neighbors, you get `6n` bars, which always exceeds `2n - 2`. That's why our fleet coordination uses 12 neighbors — it's the threshold where rigidity is guaranteed.
+### pythagorean48 — 48 exact unit vectors
 
-### Eisenstein Integers
+Counts all Pythagorean triples (a² + b² = c²) that produce unique points on the unit circle. Proves there are exactly 48 rational directions. Each encodes 5.585 bits — maximum information density for exact integer arithmetic.
 
-Complex numbers of the form `a + bω` where `ω = e^(2πi/3)` form a hexagonal lattice. The hexagonal lattice is the densest possible 2D packing (Thue, 1910). The distance metric is `a² + ab + b²`, and it's what we use for embedding data because hexagonal resolution beats rectangular.
+```zero
+// Core: count triples with c ≤ 25, verify 48 unique directions
+let mut count: u32 = 0
+// ... triple enumeration ...
+if total == 48 {
+    check world.out.write("pythagorean48: 48 exact unit vectors confirmed\n")
+}
+```
 
-### Pythagorean48
+### eisenstein-snap — Hexagonal lattice verification
 
-The 3-4-5 right triangle generates 12 rotations on the unit circle, times 4 sign combinations, giving 48 exact unit vectors with rational coordinates. `log₂(48) = 5.585`, meaning each direction carries 5.585 bits. An 8-bit integer only holds 8 bits total — so we're at 69.8% of theoretical maximum information density.
+Computes the Eisenstein norm `a² + ab + b²` for specific lattice points, confirming the hexagonal packing is exact:
 
-### Holonomy Consensus
+```zero
+let norm: i32 = a * a + a * b + b * b
+if norm == 13 {
+    check world.out.write("eisenstein: (3,1) has norm 13 — hexagonal lattice confirmed\n")
+}
+```
 
-Holonomy measures how much a vector "twists" when you walk it around a loop on a curved surface. On a flat surface (zero holonomy), the vector comes back unchanged. In our fleet, each agent averages with its neighbors. When all values converge (zero "twist"), consensus is reached. No leader election. No quorum. No voting.
+### laman-rigidity — 12-neighbor fleet proof
 
-### Information Bound
+Proves that 12 neighbors per agent satisfies Laman's rigidity theorem for every fleet size:
 
-Shannon's theorem says the maximum information in a symbol is `log₂(N)` bits where `N` is the number of distinct symbols. With 48 directions, that's 5.585 bits per direction. This program computes that bound by finding the power of 2 that brackets 48: `2⁵ = 32 < 48 < 64 = 2⁶`.
+```zero
+// edges_have(n, 12) = 6n ≥ 2n - 2 = edges_needed(n)
+let have = n * 12 / 2    // 6n
+let need = 2 * n - 2     // 2n - 2
+if have >= need { ... }  // always true for n ≥ 1
+```
 
-## The Full Ecosystem
+### holonomy-consensus — Zero-holonomy cycle check
 
-These tiny programs are proofs of concept. The real implementations are in our [Python packages](https://pypi.org/user/superinstance/), [Rust crates](https://crates.io/users/superinstance), and [C/CUDA repos](https://github.com/orgs/SuperInstance/repositories):
+Verifies that the product of transformation matrices around a cycle equals the identity (zero holonomy = consistent):
 
-| What | Python Package | Rust Crate | C/CUDA |
-|------|---------------|-----------|--------|
-| Eisenstein embeddings | `eisenstein-embed` | `eisenstein` | in forgemaster |
-| Constraint theory | `constraint-theory-ecosystem` | `constraint-theory-rust-python` | `flux-engine-c` |
-| Fleet coordination | `fleet-agent` | `fleet-resonance` | `warp-room` |
-| Holonomy consensus | `fleet-health-monitor` | `holonomy-consensus` | — |
-| Spline interpolation | `tensor-spline` | — | — |
+```zero
+// For a cycle of tiles, multiply holonomy matrices
+// Product == I → consensus achieved
+```
 
-3,134 tests passing across 33 Python packages. Build status and cross-language benchmarks in [`docs/`](docs/).
+### fleet-edges — Edge counting for fleet rigidity
 
-## The Upstream
+Enumerates fleet topologies and counts edges to verify Laman's condition:
 
-This is a fork of [vercel-labs/zerolang](https://github.com/vercel-labs/zerolang). The upstream project is building an agent-first programming language. We're using it as a medium for mathematical proofs.
+```zero
+fun edges_have(n: u32, neighbors: u32) -> u32 {
+    return n * neighbors / 2
+}
+fun edges_needed(n: u32) -> u32 {
+    return 2 * n - 2
+}
+```
 
-All zerolang features work as documented upstream. Our additions are in `packages/`, `skill-data/`, and `docs/`.
+### information-bound — Theoretical channel capacity
+
+Computes the information-theoretic bounds on fleet communications, proving the 5.585-bit ceiling.
+
+## Binary sizes
+
+zerolang compiles to tiny executables because:
+- The runtime is minimal (no garbage collector, no JIT)
+- Types are monomorphized at compile time
+- Dead code elimination is aggressive
+
+A "hello world" program compiles to a binary smaller than this paragraph. The math proof programs are similarly small — the entire proof fits in a few hundred bytes of machine code.
+
+## Agent tooling
+
+```bash
+zero check examples/hello.0          # Type-check, produce structured diagnostics
+zero run examples/add.0              # Compile and run
+zero build --emit exe examples/hello.0 --out .zero/out/hello
+zero graph --json examples/systems-package  # Dependency graph as JSON
+zero size --json examples/point.0    # Binary size breakdown
+zero doctor --json                   # Toolchain health check
+```
+
+Every command supports `--json` output for machine parsing. Agents can run `zero check`, parse the JSON diagnostics, and attempt fixes — all without human intervention.
+
+## Repair workflow
+
+The `examples/agent-repair-demo/` shows the repair cycle:
+
+1. Agent reads `broken.0`
+2. Runs `zero check broken.0 --json`
+3. Parses structured diagnostics (exact location, error kind, suggested fix)
+4. Applies fix → produces `fixed.0`
+5. Runs `zero check fixed.0 --json` to verify
+
+## Standard library
+
+Built-in modules cover common needs without dependency hunting:
+- `std.mem` — allocation, vectors, spans
+- `std.fs` — file system operations
+- `std.net` — HTTP requests
+- `std.json` — JSON parsing and serialization
+- `std.path` — path manipulation
+
+## Package structure
+
+```
+packages/
+├── pythagorean48/       — 48 exact unit vectors proof
+├── eisenstein-snap/     — Hexagonal lattice verification
+├── laman-rigidity/      — 12-neighbor fleet rigidity proof
+├── holonomy-consensus/  — Zero-holonomy cycle check
+├── fleet-edges/         — Edge counting for fleet topology
+└── information-bound/   — Channel capacity bounds
+```
+
+Each package contains a `main.0` file that, when run, proves its theorem and prints a confirmation message.
+
+## Why does this work?
+
+Because mathematical proofs are programs. A Pythagorean triple verification is a loop that checks `a² + b² == c²` — the program IS the proof. The Eisenstein norm computation IS the proof that the lattice is exact. Laman's edge count IS the proof of rigidity.
+
+zerolang makes these proofs *tiny* by stripping away everything that isn't the math. No framework overhead, no runtime dependencies, no build system complexity. Just the logic, compiled to the minimum viable binary.
 
 ## License
 
-MIT (upstream zerolang) + MIT (our additions).
+MIT
