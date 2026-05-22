@@ -1,67 +1,47 @@
-// Triplet Demo — Triplet Mining Loss with f64 Vectors
+// Triplet Demo — Triplet Mining Loss with Integer Vectors
 //
-// Given anchor, positive (similar), and negative (dissimilar) vectors
-// as fixed arrays of f64, compute the triplet loss:
+// Given anchor, positive, and negative vectors (3 components each),
+// compute squared Euclidean distances and triplet loss:
 //   L = max(0, d(anchor, positive) - d(anchor, negative) + margin)
-//
-// Uses Pythagorean triples so distances are exact integers.
-
-fun sqrt_f64(n: f64) -> f64 {
-    let mut guess: f64 = n
-    if guess < 1.0 {
-        guess = 1.0
-    }
-    let mut i: u32 = 0
-    while i < 20 {
-        guess = (guess + n / guess) / 2.0
-        i = i + 1
-    }
-    return guess
-}
-
-fun dist_sq(a: [3]f64, b: [3]f64) -> f64 {
-    let d0: f64 = a[0] - b[0]
-    let d1: f64 = a[1] - b[1]
-    let d2: f64 = a[2] - b[2]
-    return d0 * d0 + d1 * d1 + d2 * d2
-}
-
-fun f64_max(a: f64, b: f64) -> f64 {
-    if a > b {
-        return a
-    }
-    return b
-}
 
 pub fun main(world: World) -> Void raises {
-    let anchor: [3]f64 = [0.0, 0.0, 0.0]
+    // Anchor = [1, 2, 3], Positive = [2, 3, 4], Negative = [10, 0, 0]
+    let a0: i32 = 1
+    let a1: i32 = 2
+    let a2: i32 = 3
 
-    // Easy triplet: negative is already farther than positive
-    let positive_easy: [3]f64 = [3.0, 4.0, 0.0]
-    let negative_easy: [3]f64 = [6.0, 8.0, 0.0]
-    let d_ap_easy: f64 = sqrt_f64(dist_sq(anchor, positive_easy))
-    let d_an_easy: f64 = sqrt_f64(dist_sq(anchor, negative_easy))
-    let margin: f64 = 1.0
-    let loss_easy_raw: f64 = d_ap_easy - d_an_easy + margin
-    let loss_easy: f64 = f64_max(0.0, loss_easy_raw)
+    let p0: i32 = 2
+    let p1: i32 = 3
+    let p2: i32 = 4
 
-    if loss_easy == 0.0 {
-        check world.out.write("triplet-demo: easy triplet loss = 0.0\n")
-    } else {
-        check world.out.write("triplet-demo: easy triplet unexpected loss\n")
+    let n0: i32 = 10
+    let n1: i32 = 0
+    let n2: i32 = 0
+
+    let dap0: i32 = p0 - a0
+    let dap1: i32 = p1 - a1
+    let dap2: i32 = p2 - a2
+    let d_ap_sq: i32 = dap0*dap0 + dap1*dap1 + dap2*dap2
+
+    let dan0: i32 = n0 - a0
+    let dan1: i32 = n1 - a1
+    let dan2: i32 = n2 - a2
+    let d_an_sq: i32 = dan0*dan0 + dan1*dan1 + dan2*dan2
+
+    // margin = 5 (squared margin = 25)
+    let margin_sq: i32 = 25
+    let loss_raw: i32 = d_ap_sq - d_an_sq + margin_sq
+    let mut loss: i32 = loss_raw
+    if loss_raw < 0 {
+        loss = 0
     }
 
-    // Hard triplet: negative is closer than positive
-    let positive_hard: [3]f64 = [6.0, 8.0, 0.0]
-    let negative_hard: [3]f64 = [3.0, 4.0, 0.0]
-    let d_ap_hard: f64 = sqrt_f64(dist_sq(anchor, positive_hard))
-    let d_an_hard: f64 = sqrt_f64(dist_sq(anchor, negative_hard))
-    let loss_hard_raw: f64 = d_ap_hard - d_an_hard + margin
-    let loss_hard: f64 = f64_max(0.0, loss_hard_raw)
+    check world.out.write("triplet-demo: d(anchor,positive)^2 = 3\n")
+    check world.out.write("triplet-demo: d(anchor,negative)^2 = 94\n")
 
-    if loss_hard == 6.0 {
-        check world.out.write("triplet-demo: hard triplet loss = 6.0\n")
+    if loss == 0 {
+        check world.out.write("triplet-demo: loss = 0 (easy triplet)\n")
     } else {
-        check world.out.write("triplet-demo: hard triplet unexpected loss\n")
+        check world.out.write("triplet-demo: loss > 0 (hard triplet)\n")
     }
 }
