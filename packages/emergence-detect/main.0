@@ -1,0 +1,69 @@
+// Emergence Detection — Sudden Pattern Change
+//
+// Given a sequence of events (integers), detect when the sequence
+// shows "emergence" — a sudden change in pattern.
+// Simple approach: track running average and running std dev.
+// Flag when deviation exceeds 2x the running std dev.
+
+fun isqrt(n: i32) -> i32 {
+    if n <= 0 {
+        return 0
+    }
+    let mut x: i32 = n
+    let mut y: i32 = (x + 1) / 2
+    while y < x {
+        x = y
+        y = (x + n / x) / 2
+    }
+    return x
+}
+
+pub fun main(world: World) -> Void raises {
+    // Hardcoded event sequence: stable baseline then a jump
+    let events: [8]i32 = [10, 11, 10, 12, 11, 50, 51, 52]
+
+    let mut running_sum: i32 = 0
+    let mut running_sum_sq: i32 = 0
+    let mut detected: Bool = false
+    let mut detected_at: i32 = 0
+
+    let mut i: i32 = 1
+    while i < 8 {
+        let prev: i32 = events[i - 1]
+        running_sum = running_sum + prev
+        running_sum_sq = running_sum_sq + prev * prev
+
+        let count: i32 = i
+        let mean: i32 = running_sum / count
+        let var_raw: i32 = (running_sum_sq / count) - mean * mean
+        let mut variance: i32 = var_raw
+        if var_raw < 0 {
+            variance = 0
+        }
+        let std_dev: i32 = isqrt(variance)
+
+        let current: i32 = events[i]
+        let diff: i32 = current - mean
+        let mut deviation: i32 = diff
+        if diff < 0 {
+            deviation = 0 - diff
+        }
+
+        if count >= 3 && deviation > 2 * std_dev && detected == false {
+            detected = true
+            detected_at = i
+        }
+
+        i = i + 1
+    }
+
+    if detected {
+        if detected_at == 5 {
+            check world.out.write("emergence-detect: emergence at event 5\n")
+        } else {
+            check world.out.write("emergence-detect: detected\n")
+        }
+    } else {
+        check world.out.write("emergence-detect: no emergence detected\n")
+    }
+}
